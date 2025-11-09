@@ -1,5 +1,5 @@
 {
-  "interval_minutes": 0,
+  "interval_minutes": 3,
   "mcquac_path": "/src/mcquac.py",
   "default_pattern": "*std.raw",
   "io_pairs": [
