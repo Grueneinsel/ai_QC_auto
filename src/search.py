@@ -9,7 +9,7 @@ import threading, time, fnmatch, hashlib
 
 from .size import file_sizes_folder  # nutzt deine bestehende Funktion
 
-def _read_ignore_list(path: Path) -> list[str]:
+def _read_ignore_list(path: Path | None) -> list[str]:
     if not path or not path.is_file():
         return []
     lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -37,15 +37,21 @@ def start_watch_thread(
     recursive: bool = False,
     interval_seconds: int = 5,
     use_full_path: bool = True,
-    ignore_file: Union[str, Path, None] = None,  # << exakt diese Datei wird genutzt (z. B. tmp/ignore-*.txt)
+    ignore_file: Union[str, Path, None] = None,         # thread-spezifische Ignore (z. B. tmp/ignore-*.txt)
+    extra_ignore_file: Union[str, Path, None] = None,   # fixe zweite Ignore (z. B. ./ignore-global.txt)
 ) -> tuple[threading.Thread, Queue, threading.Event]:
     """
     Startet einen Endlos-Thread, der alle 'interval_seconds' scannt und Snapshots liefert.
     Snapshot-Format: Liste von Dicts mit keys: name, size, count, hash (nur count>=2).
-    'ignore_file' ist der Pfad zu der pro-Thread-Ignore-Datei (liegt z. B. in tmp/).
+
+    Es werden ZWEI Ignore-Dateien berücksichtigt:
+      - ignore_file:       pro Thread, z. B. in tmp/
+      - extra_ignore_file: fixe, globale Ignore-Datei im Ausführungsordner
+    Beide werden bei JEDEM Scan neu eingelesen und zusammengeführt.
     """
     folder = Path(folder)
     ignore_path = Path(ignore_file) if ignore_file is not None else None
+    extra_ignore_path = Path(extra_ignore_file) if extra_ignore_file is not None else None
 
     q: Queue = Queue()
     stop_evt = threading.Event()
@@ -53,7 +59,11 @@ def start_watch_thread(
     def _worker() -> None:
         counts: Dict[tuple[str,int], int] = defaultdict(int)
         while not stop_evt.is_set():
-            ignores = _read_ignore_list(ignore_path) if ignore_path else []
+            ig1 = _read_ignore_list(ignore_path)
+            ig2 = _read_ignore_list(extra_ignore_path)
+            # zusammenführen (ohne Duplikate, Reihenfolge egal)
+            ignores = list(dict.fromkeys(ig1 + ig2))
+
             sizes_now = file_sizes_folder(
                 folder=folder,
                 pattern=pattern,

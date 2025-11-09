@@ -1,0 +1,9 @@
+{
+  "interval_minutes": 10,
+  "mcquac_path": "./src/mcquac.py",
+  "default_pattern": "*std.raw",
+  "io_pairs": [
+    { "input": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data", "output": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data/out", "pattern": ".raw" },
+    { "input": "./data/in_B", "output": "./data/out_B" }
+  ]
+}
