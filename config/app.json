@@ -1,0 +1,9 @@
+{
+  "interval_minutes": 5,
+  "mcquac_path": "./src/mcquac.py",
+  "default_pattern": "*std.raw",
+  "io_pairs": [
+    { "input": "/mnt/c/Users/info/input_A", "output": "/mnt/c/Users/info/output_A", "pattern": ".raw" },
+    { "input": "./data/in_B", "output": "./data/out_B" }
+  ]
+}
