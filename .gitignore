@@ -1,0 +1,3 @@
+# ignore all files inside tmp, but keep its .gitignore
+tmp/*
+!tmp/.gitignore
