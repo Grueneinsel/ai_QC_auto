@@ -1,6 +1,6 @@
 {
-    "main_input_folder": "/pfad/zum/input",
-    "main_outdir": "/pfad/zum/output",
+    "main_input_folder": "/pfad/zum/input1",
+    "main_outdir": "/pfad/zum/output2",
     "main_fasta_file": "./path_to_fasta",
     "visualization_parameters": {
         "visualize_only": "false",
