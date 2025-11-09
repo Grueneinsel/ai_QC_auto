@@ -77,7 +77,7 @@ if __name__ == "__main__":
         ignore=["defekt.std.raw", "*.tmp"], # ignorierte Dateien/Patterns
         recursive=False,
         print_output=True,                  # True: sofortige Ausgabe in der Funktion
-        show_full_path=False,               # False: nur Dateinamen
+        show_full_path=True,               # False: nur Dateinamen
     )
 
     # Return-Wert NOCHMAL ausgeben (wie gewünscht)
