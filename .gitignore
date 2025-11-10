@@ -4,3 +4,4 @@
 
 # alle FASTA-Dateien im gesamten Repo ignorieren
 *.fasta
+*.pyc
