@@ -198,6 +198,7 @@ def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
     try:
         _empty_dir(hash_dir / "input")
         _empty_dir(hash_dir / "output")
+        _empty_dir(hash_dir / "work")
     except Exception as e:
         status_q.put(f"[WARN] {hash_dir.name}: Leeren von input/output fehlgeschlagen: {e}")
 
