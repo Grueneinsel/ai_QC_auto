@@ -69,7 +69,7 @@ This project watches one or more input folders for new mass‑spectrometry files
 Minimal example:
 ```json
 {
-  "interval_minutes": 1,
+  "interval_minutes": 6,
   "default_pattern": "*std.raw",
   "mcquac_path": "/path/to/McQuaC/main.nf",
   "nextflow_bin": "/path/to/nextflow",
