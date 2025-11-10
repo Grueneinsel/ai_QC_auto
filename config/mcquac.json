@@ -16,7 +16,7 @@
         "width_ionmaps": 10
     },
     "spike_in_parameters": {
-        "spike_ins_table": "${projectDir}/example_configurations/spike_ins.csv",
+        "spike_ins_table": "%%%SPIKE%%%%",
         "search_spike_ins": true,
         "search_labelled_spikeins": true
     },

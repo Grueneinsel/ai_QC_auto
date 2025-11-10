@@ -1,7 +1,7 @@
 {
   "interval_minutes": 0,
   "default_pattern": "*std.raw",
-  "mcquac_path": "/mnt/archiv",
+  "mcquac_path": "/home/multifredding/McQuaC/McQuaC-main/main.nf",
 
   "mounts": [
 
