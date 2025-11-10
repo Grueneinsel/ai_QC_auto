@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+"""
+MCQuaC Runner
+-------------
+
+Überwacht die Hash-Ordner unter ./tmp und führt für jedes vorkommende
+".ready" einen Nextflow-Run aus. Ablauf pro Job:
+  1) .ready -> .working (Uhrzeit anhängen)
+  2) nextflow run -profile docker <main.nf> -params-file <mcquac.json>
+     - <main.nf> wird immer aus config/app.json (mcquac_path) gelesen
+  3) Bei Prozessende wird die .working-Datei erweitert (Endzeit + Returncode)
+     und in .finish umbenannt.
+
+Integration in main.py:
+  from src.mcquac_runner import start_runner_thread
+  runner = start_runner_thread(TMP_DIR, cfg, max_parallel=1, poll_interval=1.0)
+  ... im graceful_stop(...): runner["stop"].set(); runner["thread"].join(timeout=5)
+
+Dieses Modul kann auch alleine gestartet werden (siehe __main__).
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,15 +31,18 @@ import queue
 import os
 import shutil
 
+# Projektwurzel: eine Ebene über /src
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TMP_DEFAULT = PROJECT_ROOT / "tmp"
 
+# Aus bestehendem Projekt
 try:
     from src.load_config import load_config, AppConfig  # type: ignore
-except Exception:
+except Exception:  # Fallback, damit das Modul allein lauffähig bleibt
     AppConfig = object  # type: ignore
     def load_config(*args, **kwargs):  # type: ignore
         raise RuntimeError("load_config() nicht verfügbar – bitte innerhalb des Projekts ausführen.")
+
 
 @dataclass
 class _RunningJob:
@@ -30,20 +52,25 @@ class _RunningJob:
     proc: subprocess.Popen
     started_at: datetime
 
+
 # ----------------------------- Hilfsfunktionen -----------------------------
 
 def _iso_now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
 
 def _append_line(p: Path, line: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
         f.write(line.rstrip("\n") + "\n")
 
+
 def _rename_atomic(src: Path, dst: Path) -> None:
+    """Robustes Umbenennen (auch wenn Ziel schon existiert)."""
     if dst.exists():
         dst.unlink()
     src.replace(dst)
+
 
 def _read_json(p: Path) -> Optional[Any]:
     try:
@@ -51,27 +78,35 @@ def _read_json(p: Path) -> Optional[Any]:
     except Exception:
         return None
 
+
 def _find_mcquac_json(hash_dir: Path) -> Optional[Path]:
+    # 1) Bevorzugt direkte Datei im Hash-Ordner
     p = hash_dir / "mcquac.json"
     if p.is_file():
         return p
+    # 2) Optional über info.json auflösen
     info = hash_dir / "info.json"
     data = _read_json(info)
     try:
         cand = Path(data["paths"]["mcquac_json"])  # type: ignore[index]
-        if cand.is_file(): return cand
+        if cand.is_file():
+            return cand
     except Exception:
         pass
     return None
 
+
 def _resolve_main_nf(cfg_mcquac_path: Optional[Path]) -> Optional[Path]:
+    """Liest den Pfad zu main.nf **ausschließlich** aus config/app.json (mcquac_path)."""
     if cfg_mcquac_path:
         p = Path(os.path.expandvars(os.path.expanduser(str(cfg_mcquac_path)))).resolve()
         if p.is_file():
             return p
     return None
 
+
 def _discover_ready_dirs(tmp_dir: Path) -> Iterable[Tuple[Path, Path]]:
+    """Liefert (hash_dir, ready_file) für alle Ordner mit .ready."""
     if not tmp_dir.is_dir():
         return []
     for child in tmp_dir.iterdir():
@@ -81,13 +116,15 @@ def _discover_ready_dirs(tmp_dir: Path) -> Iterable[Tuple[Path, Path]]:
         if ready.is_file():
             yield child, ready
 
+
 def _resolve_nextflow_bin(cfg: AppConfig) -> str:
+    """Suche Nextflow-Binary: $NEXTFLOW_BIN -> cfg.nextflow_bin -> ./nextflow -> PATH."""
     cand = os.environ.get("NEXTFLOW_BIN")
     if cand:
         p = Path(os.path.expandvars(os.path.expanduser(str(cand)))).resolve()
         if p.is_file():
             return str(p)
-    cfg_bin = getattr(cfg, "nextflow_bin", None)
+    cfg_bin = getattr(cfg, "nextflow_bin", None)  # optional in app.json
     if cfg_bin:
         p = Path(os.path.expandvars(os.path.expanduser(str(cfg_bin)))).resolve()
         if p.is_file():
@@ -98,110 +135,6 @@ def _resolve_nextflow_bin(cfg: AppConfig) -> str:
     found = shutil.which("nextflow")
     return found or "nextflow"
 
-# ------ NEU: Post-Processing: Output kopieren, ignore.txt aktualisieren, tmp leeren
-
-def _unique_subdir(root: Path, base_name: str) -> Path:
-    """Erzeuge eindeutigen Zielordner root/base_name, bei Kollision mit Zeitstempel."""
-    root.mkdir(parents=True, exist_ok=True)
-    cand = root / base_name
-    if not cand.exists():
-        return cand
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    cand2 = root / f"{base_name}-{ts}"
-    if not cand2.exists():
-        return cand2
-    i = 2
-    while True:
-        c = root / f"{base_name}-{i}"
-        if not c.exists():
-            return c
-        i += 1
-
-def _copy_output_tree(src_dir: Path, dst_dir: Path) -> None:
-    """Kopiere den *Inhalt* von src_dir nach dst_dir (nicht den Ordner selbst)."""
-    if not src_dir.is_dir():
-        return
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    for child in src_dir.iterdir():
-        target = dst_dir / child.name
-        if child.is_dir():
-            shutil.copytree(child, target, dirs_exist_ok=True)
-        else:
-            shutil.copy2(child, target)
-
-def _append_to_ignore_file(ignore_file: Path, filename: str) -> None:
-    ignore_file.parent.mkdir(parents=True, exist_ok=True)
-    line = filename.strip()
-    # Dedupe: Datei kurz einlesen, ansonsten hinten anhängen
-    try:
-        if ignore_file.exists():
-            existing = {ln.strip() for ln in ignore_file.read_text(encoding="utf-8", errors="ignore").splitlines()}
-            if line in existing:
-                return
-    except Exception:
-        pass
-    with ignore_file.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
-
-def _empty_dir(d: Path) -> None:
-    """Inhalt eines Ordners löschen, Ordner bestehen lassen."""
-    if not d.exists():
-        return
-    for child in d.iterdir():
-        try:
-            if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
-                child.unlink(missing_ok=True)  # py>=3.8
-        except Exception:
-            pass
-
-def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
-    """Wird bei rc==0 aufgerufen: Output übertragen, ignore.txt aktualisieren, input/output leeren."""
-    info = _read_json(hash_dir / "info.json")
-    if not isinstance(info, dict):
-        status_q.put(f"[WARN] {hash_dir.name}: info.json fehlt/korrupt – überspringe Post-Processing")
-        return
-
-    # Pfade/Infos aus info.json
-    try:
-        tmp_output_dir = Path(info.get("paths", {}).get("tmp_output_dir")) if info.get("paths") else hash_dir / "output"
-        final_root = Path(info.get("watch", {}).get("final_output_root"))
-        src_name = str(info.get("source", {}).get("name"))
-        src_stem = Path(src_name).stem if src_name else f"{hash_dir.name}"
-    except Exception as e:
-        status_q.put(f"[WARN] {hash_dir.name}: info.json unvollständig ({e}) – überspringe Post-Processing")
-        return
-
-    # Zielordner bestimmen (…/out/<SOURCE_STEM>/) und kopieren
-    try:
-        target_dir = _unique_subdir(final_root, src_stem)
-        _copy_output_tree(tmp_output_dir, target_dir)
-    except Exception as e:
-        status_q.put(f"[WARN] {hash_dir.name}: Output-Kopie nach '{final_root}' fehlgeschlagen: {e}")
-        return
-
-    # ignore.txt befüllen (wenn in info.watch.ignore_files vorhanden, das nehmen; sonst <final_root>/ignore.txt)
-    try:
-        ignore_candidates = []
-        w = info.get("watch", {})
-        if isinstance(w, dict):
-            ig = w.get("ignore_files", [])
-            if isinstance(ig, list):
-                ignore_candidates = [Path(p) for p in ig if isinstance(p, str) and p.endswith("ignore.txt")]
-        ignore_file = ignore_candidates[-1] if ignore_candidates else (final_root / "ignore.txt")
-        _append_to_ignore_file(ignore_file, src_name)
-    except Exception as e:
-        status_q.put(f"[WARN] {hash_dir.name}: ignore.txt-Update fehlgeschlagen: {e}")
-
-    # tmp/<hash>/{input,output} leeren
-    try:
-        _empty_dir(hash_dir / "input")
-        _empty_dir(hash_dir / "output")
-    except Exception as e:
-        status_q.put(f"[WARN] {hash_dir.name}: Leeren von input/output fehlgeschlagen: {e}")
-
-    status_q.put(f"[OUT] {hash_dir.name}: Output → {target_dir} ; ignore.txt aktualisiert ; tmp/input & tmp/output geleert")
 
 # ----------------------------- Runner-Thread -----------------------------
 
@@ -213,22 +146,21 @@ def _runner_loop(
     stop_evt: threading.Event,
     status_q: "queue.Queue[str]",
 ) -> None:
+    """Runner-Schleife: verarbeitet .ready nacheinander (oder bis max_parallel) und idlet sonst.
+
+    - .ready -> .working (Zeitstempel + ausgeführter Befehl)
+    - nextflow run -profile docker <main.nf> -params-file <mcquac.json>
+      <main.nf> stammt **immer** aus cfg.mcquac_path (config/app.json)
+    - nach Ende -> .finish + returncode
+    """
     running: Dict[Path, _RunningJob] = {}
 
     while not stop_evt.is_set():
-        # Beendete Prozesse einsammeln
+        # 1) Beendete Prozesse einsammeln
         for hdir, job in list(running.items()):
             rc = job.proc.poll()
             if rc is None:
                 continue
-            # Post-Processing auf Erfolg
-            try:
-                if rc == 0:
-                    _postprocess_success(hdir, status_q)
-            except Exception as e:
-                status_q.put(f"[WARN] {hdir.name}: Post-Processing Fehler: {e}")
-
-            # Abschluss markieren
             try:
                 _append_line(job.working_file, f"finished: {_iso_now()}")
                 _append_line(job.working_file, f"returncode: {rc}")
@@ -239,9 +171,10 @@ def _runner_loop(
             finally:
                 running.pop(hdir, None)
 
-        # Neue Jobs starten
+        # 2) Neue Jobs starten, wenn Kapazität frei ist
         capacity = max(0, int(max_parallel) - len(running))
         if capacity > 0:
+            # FIFO: älteste .ready zuerst (mtime)
             ready_list = list(_discover_ready_dirs(tmp_dir))
             ready_list.sort(key=lambda t: (t[1].stat().st_mtime, t[0].name))
 
@@ -259,6 +192,7 @@ def _runner_loop(
                     status_q.put(f"[WARN] Konnte .ready für {hdir.name} nicht übernehmen: {e}")
                     continue
 
+                # mcquac.json & main.nf (aus app.json) prüfen
                 mcq_json = _find_mcquac_json(hdir)
                 main_nf = _resolve_main_nf(getattr(cfg, "mcquac_path", None))
                 if not mcq_json or not mcq_json.is_file() or not main_nf:
@@ -270,16 +204,21 @@ def _runner_loop(
                     status_q.put(f"[ERR] {hdir.name}: mcquac.json oder main.nf (app.json) fehlt")
                     continue
 
+                # Logs
                 logs_dir = hdir / "logs"
                 logs_dir.mkdir(parents=True, exist_ok=True)
                 log_file = logs_dir / f"nextflow-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
 
+                # Nextflow-Binary & Befehl
                 nf_bin = _resolve_nextflow_bin(cfg)
                 cmd = [
-                    nf_bin, "run",
-                    "-profile", "docker",
+                    nf_bin,
+                    "run",
+                    "-profile",
+                    "docker",
                     str(main_nf),
-                    "-params-file", str(mcq_json),
+                    "-params-file",
+                    str(mcq_json),
                 ]
                 _append_line(working, "cmd: " + " ".join(cmd))
 
@@ -304,7 +243,7 @@ def _runner_loop(
                 except FileNotFoundError:
                     _append_line(
                         working,
-                        f"error: nextflow nicht gefunden (bin={nf_bin}). Installiere Nextflow oder setze $NEXTFLOW_BIN",
+                        f"error: nextflow nicht gefunden (bin={nf_bin}). Installiere Nextflow oder setze $NEXTFLOW_BIN; z.B.: curl -s https://get.nextflow.io | bash",
                     )
                     try:
                         _rename_atomic(working, hdir / ".finish")
@@ -319,7 +258,9 @@ def _runner_loop(
                         pass
                     status_q.put(f"[ERR] {hdir.name}: Start fehlgeschlagen: {e}")
 
+        # 3) Idle kurz schlafen
         stop_evt.wait(poll_interval)
+
 
 # ----------------------------- Public API -----------------------------
 
@@ -330,6 +271,10 @@ def start_runner_thread(
     max_parallel: int = 1,
     poll_interval: float = 1.0,
 ) -> Dict[str, Any]:
+    """
+    Startet den Runner als Hintergrund-Thread.
+    Rückgabe: {"thread": Thread, "stop": Event, "status": Queue[str]}
+    """
     stop_evt = threading.Event()
     status_q: "queue.Queue[str]" = queue.Queue()
     t = threading.Thread(
@@ -341,6 +286,8 @@ def start_runner_thread(
     t.start()
     return {"thread": t, "stop": stop_evt, "status": status_q}
 
+
+# ----------------------------- Standalone -----------------------------
 if __name__ == "__main__":
     try:
         cfg = load_config()
