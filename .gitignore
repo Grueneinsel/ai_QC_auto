@@ -1,3 +1,7 @@
-# ignore all files inside tmp, but keep its .gitignore
-tmp/*
-!tmp/.gitignore
+# Alle Dateien in tmp ignorieren, aber seine .gitignore behalten
+/tmp/*
+!/tmp/.gitignore
+
+# Alle Dateien in config/fasta ignorieren, aber seine .gitignore behalten
+/config/fasta/*
+!/config/fasta/.gitignore
