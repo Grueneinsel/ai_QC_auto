@@ -5,6 +5,10 @@ from typing import Iterable, Dict, List, Set, Tuple, Optional
 from datetime import datetime
 import json, shutil
 
+# Projektwurzel (eine Ebene über /src)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FASTA_DIR = (PROJECT_ROOT / "config" / "fasta").resolve()
+
 # ruft die Job-Erzeugung auf
 from .job_creater import write_from_config
 
@@ -83,6 +87,8 @@ def _write_info_json(
             "absolute_path": str(src_abs),
             "size_bytes": size,
         },
+        # Optional: FASTA-Ordner mit ablegen (reine Info)
+        "fasta_dir": str(FASTA_DIR),
     }
     if info_extra:
         info["watch"] = {
@@ -106,6 +112,22 @@ def _write_ready_file(hash_dir: Path, filename: str = ".ready", overwrite: bool 
     p.write_text(datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
     return p
 
+def _inject_fasta_dir_in_mcquac(mcquac_path: Path) -> None:
+    """
+    Setzt in mcquac.json das Feld 'main_fasta_file' auf den FASTA-Ordnerpfad.
+    Es wird KEINE Datei gesucht – wir tragen IMMER den Ordner ein.
+    """
+    if not mcquac_path.is_file():
+        return
+    try:
+        data = json.loads(mcquac_path.read_text(encoding="utf-8"))
+        # Immer Ordnerpfad setzen (absolute Form)
+        data["main_fasta_file"] = str(FASTA_DIR)
+        mcquac_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        # still – optional: Logging ergänzen
+        pass
+
 def copy_candidates(
     snapshot: List[Dict],
     *,
@@ -123,6 +145,7 @@ def copy_candidates(
 
     Zusätzlich:
       - erzeugt mcquac.json via write_from_config(...) mit INPUT=tmp/<hash>/input, OUTPUT=tmp/<hash>/output
+      - setzt 'main_fasta_file' in mcquac.json auf den FASTA-**Ordnerpfad**
       - schreibt info.json mit allen Pfaden & Parametern für später (aus info_for_hash)
       - legt .ready im Hash-Ordner an, sobald Job & Info erzeugt sind
 
@@ -161,7 +184,7 @@ def copy_candidates(
             # pro Hash: mcquac.json & info.json & .ready (nur 1x pro Aufruf)
             if h not in jobs_written_for_hash:
                 try:
-                    # mcquac.json
+                    # mcquac.json erzeugen
                     write_from_config(
                         input_value=str(input_dir),
                         output_value=str(output_dir),
@@ -169,6 +192,10 @@ def copy_candidates(
                         template_filename="mcquac.json",
                         config_dir="config",
                     )
+
+                    # FASTA-Ordnerpfad in mcquac.json eintragen
+                    _inject_fasta_dir_in_mcquac(hash_dir / "mcquac.json")
+
                     # info.json
                     _write_info_json(
                         hash_dir,
@@ -181,6 +208,7 @@ def copy_candidates(
                         filename="info.json",
                         overwrite=False,
                     )
+
                     # .ready
                     _write_ready_file(hash_dir, filename=".ready", overwrite=False)
 
