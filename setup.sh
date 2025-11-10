@@ -1,25 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# ============================================
-#  MCQuaC / ai_QC_auto Setup (Ubuntu/WSL2)
-#  - Docker Engine + Compose
-#  - Java (OpenJDK 21)
-#  - Nextflow lokal im Projekt (PROJECT_ROOT/nextflow)
-#  - Python venv + deps (optional requirements.txt)
-#  - app.json: nextflow_bin eintragen (falls fehlt)
-#  - Container-Images aus nextflow.config vorziehen
-# ============================================
+# --- re-exec in bash, falls mit sh aufgerufen ---
+if [ -z "${BASH_VERSION:-}" ]; then exec /usr/bin/env bash "$0" "$@"; fi
 
-### Farben / Logging
-bold() { printf "\033[1m%s\033[0m\n" "$*"; }
-info() { printf "  • %s\n" "$*"; }
-warn() { printf "\033[33m[WARN]\033[0m %s\n" "$*"; }
-err()  { printf "\033[31m[ERR]\033[0m  %s\n" "$*"; }
-die()  { err "$*"; exit 1; }
+bold(){ printf "\033[1m%s\033[0m\n" "$*"; }
+info(){ printf "  • %s\n" "$*"; }
+warn(){ printf "\033[33m[WARN]\033[0m %s\n" "$*"; }
+err() { printf "\033[31m[ERR]\033[0m  %s\n" "$*"; }
+die() { err "$*"; exit 1; }
 
-# Root/Sudo ermitteln
-if [[ $EUID -ne 0 ]]; then
+# --- Root/Sudo ermitteln (ohne $EUID -> portable) ---
+if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
     SUDO="sudo"
   else
@@ -29,146 +21,267 @@ else
   SUDO=""
 fi
 
-# Projekt-Root (dieses Script erwartet: scripts/setup.sh)
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+# --- Projekt-Root bestimmen (Script liegt z. B. in PROJECT_ROOT/scripts) ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 bold "MCQuaC / ai_QC_auto Setup"
 info "PROJECT_ROOT = $PROJECT_ROOT"
 
-# --- kleine Helfer ---
-apt_install() {
+# -------- Helpers --------
+have(){ command -v "$1" >/dev/null 2>&1; }
+apt_pkg_exists(){ apt-cache show "$1" >/dev/null 2>&1; }
+apt_install_filtered(){
   $SUDO apt-get update -y
-  # retry gegen flakey mirrors
-  $SUDO apt-get install -y --no-install-recommends "$@" || {
-    warn "apt install fehlgeschlagen, erneut versuchen…"
-    $SUDO apt-get install -y --no-install-recommends "$@"
-  }
+  local to_install=() skipped=()
+  for pkg in "$@"; do
+    if apt_pkg_exists "$pkg"; then to_install+=("$pkg"); else skipped+=("$pkg"); fi
+  done
+  if ((${#skipped[@]})); then warn "Überspringe nicht verfügbare Pakete: ${skipped[*]}"; fi
+  if ((${#to_install[@]})); then
+    $SUDO apt-get install -y --no-install-recommends "${to_install[@]}" || {
+      warn "apt install fehlgeschlagen, erneuter Versuch…"
+      $SUDO apt-get install -y --no-install-recommends "${to_install[@]}"
+    }
+  fi
 }
 
-ensure_line_in_file() {
-  # $1=file, $2=line
-  local f="$1" line="$2"
-  [[ -f "$f" ]] || touch "$f"
-  grep -Fxq "$line" "$f" || echo "$line" | $SUDO tee -a "$f" >/dev/null
+download(){
+  # download URL OUTFILE
+  local url="$1" out="$2"
+  if have curl;  then curl -fsSL "$url" -o "$out"; return $?; fi
+  if have wget;  then wget -q    "$url" -O "$out"; return $?; fi
+  return 2
 }
 
-# --- Basis-Pakete ---
+# -------- 1) Systempakete --------
 bold "1) System-Pakete installieren"
-apt_install ca-certificates curl gnupg lsb-release unzip zip jq git \
-            openjdk-21-jre-headless python3-venv python3-pip \
-            cifs-utils apt-transport-https software-properties-common
+apt_install_filtered ca-certificates curl wget gnupg lsb-release unzip zip jq git \
+                     python3-venv python3-pip cifs-utils apt-transport-https
 
-# --- WSL2: systemd einschalten (für Docker-Dienst) ---
+# Java (21 -> 17 -> 11)
+if ! have java; then apt_install_filtered openjdk-21-jre-headless || true; fi
+if ! have java; then apt_install_filtered openjdk-17-jre-headless || true; fi
+if ! have java; then apt_install_filtered openjdk-11-jre-headless || true; fi
+have java || warn "Java nicht gefunden – Nextflow benötigt Java ≥ 11."
+
+# -------- 2) WSL systemd (optional) --------
 if grep -qi microsoft /proc/version 2>/dev/null; then
-  bold "WSL erkannt – systemd prüfen"
+  bold "WSL erkannt – systemd aktivieren/prüfen"
   WSL_CONF="/etc/wsl.conf"
   TMP_WSL="$(mktemp)"
   if [[ -f "$WSL_CONF" ]]; then
     cat "$WSL_CONF" > "$TMP_WSL"
-    if ! grep -q "^\[boot\]" "$TMP_WSL"; then
-      printf "\n[boot]\n" >> "$TMP_WSL"
-    fi
+    grep -q "^\[boot\]" "$TMP_WSL" || printf "\n[boot]\n" >> "$TMP_WSL"
     if grep -q "^systemd\s*=" "$TMP_WSL"; then
       $SUDO sed -i 's/^systemd\s*=.*/systemd=true/g' "$TMP_WSL"
     else
       printf "systemd=true\n" >> "$TMP_WSL"
     fi
   else
-    cat > "$TMP_WSL" <<EOF
-[boot]
-systemd=true
-EOF
+    printf "[boot]\nsystemd=true\n" > "$TMP_WSL"
   fi
-  $SUDO cp "$TMP_WSL" "$WSL_CONF"
-  rm -f "$TMP_WSL"
-  info "WSL systemd aktiviert (falls nicht schon aktiv). Hinweis: Ein WSL-Neustart kann nötig sein: 'wsl.exe --shutdown'"
+  $SUDO cp "$TMP_WSL" "$WSL_CONF"; rm -f "$TMP_WSL"
+  info "Hinweis: ggf. 'wsl.exe --shutdown' und Terminal neu öffnen."
 fi
 
-# --- Docker installieren (offizielles Repo) ---
+# -------- 3) Docker Engine + Compose --------
 bold "2) Docker Engine + Compose installieren"
-if ! command -v docker >/dev/null 2>&1; then
-  # Docker GPG Key & Repo
+if ! have docker; then
   $SUDO install -m 0755 -d /etc/apt/keyrings
   if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | $SUDO gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    $SUDO chmod a+r /etc/apt/keyrings/docker.gpg
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | $SUDO gpg --dearmor -o /etc/apt/keyrings/docker.gpg || true
+    $SUDO chmod a+r /etc/apt/keyrings/docker.gpg || true
   fi
-  UB_CODENAME="$($SUDO bash -c 'source /etc/os-release && echo $VERSION_CODENAME')"
-  echo \
-"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu ${UB_CODENAME} stable" | \
-  $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
-
-  apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  . /etc/os-release
+  ARCH="$(dpkg --print-architecture)"
+  case "$ID" in
+    ubuntu) REPO="deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" ;;
+    debian) REPO="deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" ;;
+    *)      REPO="deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" ;;
+  esac
+  echo "$REPO" | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
+  apt_install_filtered docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 else
-  info "Docker ist bereits installiert."
+  info "Docker bereits vorhanden."
 fi
 
-# Docker-Dienst starten/aktivieren (wenn systemd läuft)
-if command -v systemctl >/dev/null 2>&1; then
-  $SUDO systemctl enable --now docker || warn "Konnte docker.service nicht starten – evtl. WSL-Neustart nötig."
+# Docker starten & Gruppe setzen
+if have systemctl; then
+  $SUDO systemctl enable --now docker || warn "docker.service konnte nicht gestartet werden."
 fi
-
-# Nutzer in docker-Gruppe (damit kein sudo nötig)
 if getent group docker >/dev/null 2>&1; then
   if id -nG "$USER" | grep -qw docker; then
-    info "User '$USER' ist bereits in der docker-Gruppe."
+    info "User '$USER' ist in der docker-Gruppe."
   else
     $SUDO usermod -aG docker "$USER" || warn "Konnte User nicht zur docker-Gruppe hinzufügen."
-    warn "Bitte neu einloggen/WSL-Session neu starten, damit Docker ohne sudo funktioniert."
+    warn "Bitte neu einloggen/WSL neu starten, damit Docker ohne sudo funktioniert."
   fi
 fi
+if ! docker info >/dev/null 2>&1; then
+  warn "Docker-Daemon nicht erreichbar (Neustart/WSL shutdown nötig?)."
+fi
 
-# Kurzer Docker-Test (nicht fatal)
-if command -v docker >/dev/null 2>&1; then
-  if ! docker info >/dev/null 2>&1; then
-    warn "Docker Dämon nicht erreichbar. Falls WSL: 'wsl.exe --shutdown' und Terminal neu öffnen."
+# -------- 3b) Docker Sanity Checks (eingebaut aus deiner Liste) --------
+docker_sanity_checks(){
+  bold "3b) Docker Sanity Checks"
+
+  # 1) Läuft Docker überhaupt?
+  info "#1: docker ps"
+  if docker ps >/dev/null 2>&1; then info "Docker-Daemon erreichbar."; else warn "Docker-Daemon NICHT erreichbar."; fi
+
+  # 2) Ist dein User in der 'docker'-Gruppe?
+  info "#2: Gruppen von $USER"
+  groups_out="$(id -nG "$USER" || true)"; info "Gruppen: $groups_out"
+  if ! grep -qw docker <<<"$groups_out"; then
+    warn "User '$USER' ist nicht in der docker-Gruppe – füge hinzu…"
+    $SUDO groupadd docker 2>/dev/null || true
+    $SUDO usermod -aG docker "$USER" || true
+    warn "Bitte neu einloggen oder 'newgrp docker' ausführen."
   fi
-else
-  warn "docker CLI nicht gefunden – Installation übersprungen?"
-fi
 
-# --- Nextflow lokal ins Projekt legen ---
-bold "3) Nextflow installieren (lokal im Projekt)"
-NF_BIN="${PROJECT_ROOT}/nextflow"
-if [[ -x "$NF_BIN" ]]; then
-  info "Nextflow bereits vorhanden: $NF_BIN"
-else
-  # safer tmp install; vermeidet TTY-Pipes in manchen Umgebungen
-  TMPDIR="$(mktemp -d)"
-  pushd "$TMPDIR" >/dev/null
-  curl -fsSL https://get.nextflow.io -o get.nextflow
-  chmod +x get.nextflow
-  ./get.nextflow
-  mv nextflow "$NF_BIN"
-  chmod +x "$NF_BIN"
-  popd >/dev/null
-  rm -rf "$TMPDIR"
-  info "Nextflow installiert: $NF_BIN"
-fi
-# Version anzeigen
-"$NF_BIN" -version || warn "Nextflow Version konnte nicht ermittelt werden."
+  # 3) Falls 'docker' nicht in der Liste: hinzufügen -> (oben erledigt)
 
-# --- app.json: nextflow_bin eintragen, falls fehlt ---
-bold "4) config/app.json aktualisieren (nextflow_bin)"
-APP_JSON="${PROJECT_ROOT}/config/app.json"
-if [[ -f "$APP_JSON" ]]; then
-  if jq -e '.nextflow_bin' "$APP_JSON" >/dev/null 2>&1; then
-    info "nextflow_bin existiert bereits in app.json – unverändert gelassen."
+  # 4) Gruppe sofort aktivieren (oder neu einloggen)
+  info "#4: Hinweis: 'newgrp docker' wechselt die Gruppenzugehörigkeit im aktuellen Terminal."
+
+  # 5) Socket-Rechte prüfen
+  info "#5: /var/run/docker.sock prüfen"
+  if [[ -S /var/run/docker.sock ]]; then
+    ls -l /var/run/docker.sock || true
+    owner=$(stat -c '%U' /var/run/docker.sock 2>/dev/null || echo '?')
+    group=$(stat -c '%G' /var/run/docker.sock 2>/dev/null || echo '?')
+    mode=$(stat -c '%a' /var/run/docker.sock 2>/dev/null || echo '?')
+    info "Socket owner=$owner group=$group mode=$mode"
+    if [[ "$owner" != root || "$group" != docker ]]; then
+      warn "Setze Eigentümer temporär auf root:docker"
+      $SUDO chown root:docker /var/run/docker.sock || true
+    fi
+    if [[ "$mode" != 660 && "$mode" != 666 ]]; then
+      warn "Setze Modus temporär auf 660"
+      $SUDO chmod 660 /var/run/docker.sock || true
+    fi
   else
-    TMP_APP="$(mktemp)"
-    jq --arg nf "$NF_BIN" '. + {nextflow_bin: $nf}' "$APP_JSON" > "$TMP_APP" \
-      && $SUDO mv "$TMP_APP" "$APP_JSON"
-    info "nextflow_bin in app.json ergänzt: $NF_BIN"
+    warn "Docker-Socket nicht gefunden – läuft der Daemon?"
   fi
+
+  # 6) Kurz testen, ob der Comet-Container jetzt läuft
+  info "#6: Teste Comet-Container"
+  if docker run --rm quay.io/medbioinf/comet-ms:v2024.01.0 comet -p | head -n1; then
+    info "Comet-Container läuft."
+  else
+    warn "Comet-Container-Test fehlgeschlagen."
+  fi
+}
+
+docker_sanity_checks
+
+# -------- 4) Nextflow installieren (mit Fallback) --------
+bold "4) Nextflow installieren (lokal im Projekt)"
+NF_BIN="${PROJECT_ROOT}/nextflow"
+
+install_nextflow(){
+  local nf_out="$1"
+  if [[ -x "$nf_out" ]]; then
+    info "Nextflow bereits vorhanden: $nf_out"
+    return 0
+  fi
+
+  local tmp dir nf_boot="get.nextflow"
+  dir="$(mktemp -d)"; pushd "$dir" >/dev/null
+
+  # 1) Primär: Bootstrap-Skript herunterladen und ausführen
+  if download "https://get.nextflow.io" "$nf_boot"; then
+    chmod +x "$nf_boot" || true
+    if bash "./$nf_boot"; then
+      if [[ -s "nextflow" ]]; then
+        mv "nextflow" "$nf_out"
+        chmod +x "$nf_out"
+        popd >/dev/null; rm -rf "$dir"
+        info "Nextflow via Bootstrap installiert: $nf_out"
+        return 0
+      else
+        warn "Bootstrap lief, aber 'nextflow' wurde nicht erzeugt."
+      fi
+    else
+      warn "Bootstrap-Skript konnte nicht ausgeführt werden."
+    fi
+  else
+    warn "Download von get.nextflow.io fehlgeschlagen."
+  fi
+
+  # 2) Fallback: direkte Binary von GitHub (latest release)
+  info "Versuche Fallback-Download der Nextflow-Binary…"
+  if download "https://github.com/nextflow-io/nextflow/releases/latest/download/nextflow" "nextflow"; then
+    if [[ -s "nextflow" ]]; then
+      mv "nextflow" "$nf_out"
+      chmod +x "$nf_out"
+      popd >/dev/null; rm -rf "$dir"
+      info "Nextflow via Fallback installiert: $nf_out"
+      return 0
+    fi
+  fi
+
+  popd >/dev/null; rm -rf "$dir"
+  return 1
+}
+
+if install_nextflow "$NF_BIN"; then
+  "$NF_BIN" -version || warn "Nextflow Version konnte nicht ermittelt werden."
 else
-  warn "config/app.json wurde nicht gefunden – Überspringe Patch."
+  die "Nextflow konnte nicht installiert werden. Prüfe Netzwerk/Proxy & Java."
 fi
 
-# --- Python venv & (optionales) requirements.txt ---
-bold "5) Python-Venv vorbereiten"
+# -------- 5) McQuaC klonen/aktualisieren --------
+bold "5) McQuaC Repository holen"
+REPO_URL="https://github.com/mpc-bioinformatics/McQuaC.git"
+REPO_DIR="${PROJECT_ROOT}/McQuaC"
+if [[ -d "$REPO_DIR/.git" ]]; then
+  info "McQuaC vorhanden – aktualisiere…"
+  git -C "$REPO_DIR" fetch --all --prune
+  git -C "$REPO_DIR" pull --ff-only
+else
+  git clone "$REPO_URL" "$REPO_DIR"
+fi
+
+# main.nf finden (Top-Level oder ein Unterordner)
+if [[ -f "${REPO_DIR}/main.nf" ]]; then
+  MAIN_NF="${REPO_DIR}/main.nf"
+else
+  MAIN_NF="$(find "$REPO_DIR" -maxdepth 2 -type f -name main.nf | head -n1 || true)"
+fi
+[[ -n "${MAIN_NF:-}" && -f "$MAIN_NF" ]] || die "Konnte main.nf im McQuaC-Repo nicht finden."
+info "Gefundener mcquac_path = $MAIN_NF"
+
+# -------- 6) app.json aktualisieren/erzeugen --------
+bold "6) config/app.json aktualisieren"
+APP_JSON="${PROJECT_ROOT}/config/app.json"
+$SUDO mkdir -p "${PROJECT_ROOT}/config"
+if [[ -f "$APP_JSON" ]]; then
+  TMP_APP="$(mktemp)"
+  jq --arg nfbin "$NF_BIN" --arg mcq "$MAIN_NF" \
+     '. + {nextflow_bin: $nfbin, mcquac_path: $mcq}' "$APP_JSON" > "$TMP_APP" \
+     || die "jq konnte app.json nicht patchen."
+  $SUDO mv "$TMP_APP" "$APP_JSON"
+  info "app.json gepatcht."
+else
+  cat >"$APP_JSON"<<EOF
+{
+  "interval_minutes": 1,
+  "default_pattern": "*std.raw",
+  "mcquac_path": "$(printf '%s' "$MAIN_NF")",
+  "nextflow_bin": "$(printf '%s' "$NF_BIN")",
+  "mounts": [],
+  "unmount_on_exit": true,
+  "io_pairs": []
+}
+EOF
+  info "Neue app.json erstellt."
+fi
+
+# -------- 7) Python venv + requirements --------
+bold "7) Python-Venv vorbereiten"
 if [[ ! -d "${PROJECT_ROOT}/.venv" ]]; then
   python3 -m venv "${PROJECT_ROOT}/.venv"
   info "Venv erstellt: ${PROJECT_ROOT}/.venv"
@@ -183,58 +296,45 @@ else
 fi
 deactivate || true
 
-# --- Verzeichnisstruktur anlegen ---
-bold "6) Verzeichnisse & Platzhalter anlegen"
-mkdir -p "${PROJECT_ROOT}/tmp" \
-         "${PROJECT_ROOT}/config/fasta" \
-         "${PROJECT_ROOT}/config/spike"
+# -------- 8) Verzeichnisse --------
+bold "8) Verzeichnisse anlegen"
+mkdir -p "${PROJECT_ROOT}/tmp" "${PROJECT_ROOT}/config/fasta" "${PROJECT_ROOT}/config/spike"
 touch "${PROJECT_ROOT}/config/spike/.keep" "${PROJECT_ROOT}/config/fasta/.keep"
 
-# --- Container-Images aus nextflow.config vorziehen ---
-bold "7) Container-Images vorziehen (falls definierbar)"
-# mcquac_path aus app.json auslesen
-MCQUAC_PATH="$(jq -r '.mcquac_path // empty' "$APP_JSON" 2>/dev/null || true)"
-if [[ -n "$MCQUAC_PATH" && -f "$MCQUAC_PATH" ]]; then
-  NXF_DIR="$(cd -- "$(dirname -- "$MCQUAC_PATH")" && pwd)"
-  NXF_CFG="${NXF_DIR}/nextflow.config"
-  if [[ -f "$NXF_CFG" ]]; then
-    # simple Extract: container = 'image[:tag]' oder "image"
-    mapfile -t IMAGES < <(grep -Po "(?<=container\s*=\s*['\"]).+?(?=['\"])|(?<=container\s+['\"]).+?(?=['\"])|(?<=container\s*=\s*)[\w./:-]+" "$NXF_CFG" | sort -u || true)
-    if [[ ${#IMAGES[@]} -gt 0 ]]; then
-      info "Gefundene Container:"
-      printf "    - %s\n" "${IMAGES[@]}"
-      for img in "${IMAGES[@]}"; do
-        if [[ "$img" =~ ^[-_.a-zA-Z0-9/]+(:[-_.a-zA-Z0-9]+)?$ ]]; then
-          if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-            docker pull "$img" || warn "pull fehlgeschlagen: $img"
-          else
-            warn "Docker nicht verfügbar – Überspringe pull von $img"
-          fi
-        fi
-      done
+# -------- 9) Container-Images aus nextflow.config (optional) --------
+bold "9) Container-Images vorziehen (falls definierbar)"
+NXF_CFG="$(dirname "$MAIN_NF")/nextflow.config"
+if [[ -f "$NXF_CFG" ]]; then
+  images="$(grep -Po "(?<=container\s*=\s*['\"]).+?(?=['\"])|(?<=container\s+['\"]).+?(?=['\"])|(?<=container\s*=\s*)[\w./:-]+" "$NXF_CFG" | sort -u || true)"
+  if [[ -n "$images" ]]; then
+    info "Gefundene Container:"
+    printf "    - %s\n" $images
+    if have docker && docker info >/dev/null 2>&1; then
+      while IFS= read -r img; do
+        [[ -z "$img" ]] && continue
+        docker pull "$img" || warn "pull fehlgeschlagen: $img"
+      done <<< "$images"
     else
-      info "Keine Container-Zuweisungen in nextflow.config gefunden – pull übersprungen."
+      warn "Docker nicht verfügbar – überspringe pulls."
     fi
   else
-    warn "nextflow.config nicht gefunden neben mcquac_path ($NXF_CFG) – übersprungen."
+    info "Keine Container-Zuweisungen gefunden – pull übersprungen."
   fi
 else
-  warn "mcquac_path nicht (korrekt) in app.json gesetzt – Container-Pull übersprungen."
+  warn "nextflow.config neben main.nf nicht gefunden – pull übersprungen."
 fi
 
-# --- kleiner Abschluss-Check ---
-bold "8) Checks"
+# -------- 10) Abschluss-Checks --------
+bold "10) Abschluss-Checks"
 JAVA_OK=$([[ "$(java -version 2>&1 | head -n1)" =~ "version" ]] && echo OK || echo FAIL)
 DOCKER_OK=$({ docker info >/dev/null 2>&1 && echo OK; } || echo FAIL)
 NXF_OK=$({ "$NF_BIN" -version >/dev/null 2>&1 && echo OK; } || echo FAIL)
-
 printf "\n"
-info "Java:   $JAVA_OK"
-info "Docker: $DOCKER_OK"
-info "NXF:    $NXF_OK"
+info "Java:        $JAVA_OK"
+info "Docker:      $DOCKER_OK"
+info "Nextflow:    $NXF_OK"
+info "nextflow_bin: $(jq -r '.nextflow_bin' "$APP_JSON" 2>/dev/null || echo '?')"
+info "mcquac_path:  $(jq -r '.mcquac_path' "$APP_JSON" 2>/dev/null || echo '?')"
 printf "\n"
-
 bold "Fertig!"
-info "Falls Docker in WSL frischer aktiviert wurde: WSL einmal neu starten (PowerShell: 'wsl.exe --shutdown')."
-info "Nextflow-Binary: $NF_BIN"
-info "app.json aktualisiert (nextflow_bin), falls nötig."
+info "Test optional: '${NF_BIN}' run hello   (mit Docker: '${NF_BIN}' run hello -with-docker)"

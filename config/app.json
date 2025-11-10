@@ -2,7 +2,6 @@
   "interval_minutes": 1,
   "default_pattern": "*std.raw",
   "mcquac_path": "/home/multifredding/McQuaC/McQuaC-main/main.nf",
-  "nextflow_bin2": "/home/multifredding/ai_QC_auto/nextflow",
   "nextflow_bin": "/home/multifredding/nextflow",
 
   "mounts": [

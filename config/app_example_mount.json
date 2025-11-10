@@ -1,15 +1,16 @@
 {
-  "interval_minutes": 3,
+  "interval_minutes": 1,
   "default_pattern": "*std.raw",
-  "mcquac_path": "/mnt/archiv",
-
+  "mcquac_path": "/home/multifredding/McQuaC/McQuaC-main/main.nf",
+  "nextflow_bin": "/home/multifredding/nextflow",
+  
   "mounts": [
     {
       "name": "archiv",
       "host": "192.168.10.20",
       "share": "Archiv",
       "mountpoint": "/mnt/archiv",
-      "username": "dominik",
+      "username": "user123",
       "password": "GEHEIMES-PASSWORT",
       "domain": "ACME",
       "vers": null,
