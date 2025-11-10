@@ -1,7 +1,26 @@
 {
-  "interval_minutes": 0,
-  "mcquac_path": "/src/mcquac.py",
+  "interval_minutes": 3,
   "default_pattern": "*std.raw",
+  "mcquac_path": "/mnt/archiv",
+
+  "mounts": [
+    {
+      "name": "archiv",
+      "host": "192.168.10.20",
+      "share": "Archiv",
+      "mountpoint": "/mnt/archiv",
+      "username": "dominik",
+      "password": "GEHEIMES-PASSWORT",
+      "domain": "ACME",
+      "vers": null,
+      "file_mode": "0664",
+      "dir_mode": "0775",
+      "extra_opts": ["noserverino"]
+    }
+  ],
+
+  "unmount_on_exit": true,
+
   "io_pairs": [
     { "input": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data", "output": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data/out", "pattern": "*std.raw" }
   ]

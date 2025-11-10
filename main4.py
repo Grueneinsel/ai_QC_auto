@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from pathlib import Path
-import sys, re
+import sys, re, signal, time
 
 # --- Projektroot & Imports absichern ---
 ROOT = Path(__file__).resolve().parent
@@ -12,13 +12,34 @@ from src.clear import nuke_tmp
 from src.load_config import load_config
 from src.search import start_watch_thread            # unterstützt extra_ignore_file
 from src.copier import copy_candidates               # erzeugt mcquac.json + info.json
+from src.mounter import ensure_mounts_from_cfg, unmount_all_from_cfg  # nutzt "mounts" aus cfg
 
 TMP_DIR = ROOT / "tmp"
 
 def slug(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(s).strip()) or "x"
 
-if __name__ == "__main__":
+def graceful_stop(watchers: list[dict]) -> None:
+    print("\nBeende Überwachung …")
+    for w in watchers:
+        try:
+            w["stop"].set()
+            w["thread"].join(timeout=2)
+        except Exception:
+            pass
+    print("Fertig.")
+
+def _get(obj, name, default=None):
+    # cfg kann Dict oder Objekt sein
+    try:
+        return getattr(obj, name)
+    except Exception:
+        try:
+            return obj.get(name, default)  # type: ignore
+        except Exception:
+            return default
+
+def main() -> int:
     # tmp leeren (falls unerwünscht: auskommentieren)
     cleaned = nuke_tmp(ROOT)
     print(f"Bereinigt: {cleaned}\n")
@@ -26,36 +47,72 @@ if __name__ == "__main__":
     # Config laden (expects interval_seconds in config/app.json)
     cfg = load_config()
     print("Starte Überwachung aus config/app.json …")
-    print(f"  Interval: {cfg.interval_seconds} s")
-    print(f"  default_pattern: {cfg.default_pattern}")
-    print(f"  mcquac_path:     {cfg.mcquac_path}\n")
+    print(f"  Interval: { _get(cfg,'interval_seconds') } s")
+    print(f"  default_pattern: { _get(cfg,'default_pattern') }")
+    print(f"  mcquac_path:     { _get(cfg,'mcquac_path') }\n")
+
+    # --- Systemweite Mounts aus config bereitstellen (optional) ------------- #
+    mounts = _get(cfg, "mounts", None) or []
+    continue_on_mount_error = bool(_get(cfg, "continue_on_mount_error", False))
+    if mounts:
+        try:
+            statuses = ensure_mounts_from_cfg(
+                cfg,
+                best_effort=continue_on_mount_error,
+                non_interactive=True
+            )
+            print("Mount-Status:")
+            for name, st in statuses.items():
+                print(f"  - {name}: {st}")
+            print()
+        except PermissionError as e:
+            msg = f"[FATAL] {e}\nTipp: Als root ausführen (sudo) und 'cifs-utils' installieren."
+            if continue_on_mount_error:
+                print("[WARN] Mount-Fehler, fahre trotzdem fort:", msg)
+            else:
+                print(msg)
+                return 2
+        except Exception as e:
+            if continue_on_mount_error:
+                print(f"[WARN] Mount fehlgeschlagen, fahre fort: {e}")
+            else:
+                print(f"[FATAL] Mount fehlgeschlagen: {e}")
+                return 2
+    else:
+        print("Keine Mounts in config/app.json definiert – überspringe Mount-Schritt.\n")
+    # ----------------------------------------------------------------------- #
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     # Für jedes IO-Pair einen Watcher-Thread starten
-    watchers = []
-    for i, pair in enumerate(cfg.io_pairs, start=1):
-        folder_in  = pair.input
-        final_out  = pair.output
-        pattern    = pair.pattern or cfg.default_pattern
+    watchers: list[dict] = []
+    io_pairs = _get(cfg, "io_pairs", []) or []
+    if not io_pairs:
+        print("[WARN] Keine io_pairs in der Config. Es werden keine Watcher gestartet.\n")
+
+    for i, pair in enumerate(io_pairs, start=1):
+        # pair kann Dict oder Objekt sein
+        folder_in  = _get(pair, "input")
+        final_out  = _get(pair, "output")
+        pattern    = _get(pair, "pattern") or _get(cfg, "default_pattern")
         use_full   = True
         recursive  = False
-        interval_s = cfg.interval_seconds
+        interval_s = _get(cfg, "interval_seconds")
 
         # thread-spezifische Ignore-Datei im tmp/
         ign_thread = TMP_DIR / f"ignore-{slug(folder_in)}-{slug(pattern)}.txt"
         ign_thread.touch(exist_ok=True)
 
         # zweite Ignore-Datei: ignore.txt im Output-Ordner des Pairs
-        final_out.mkdir(parents=True, exist_ok=True)           # sicherstellen, dass es den Ordner gibt
-        ign_output = final_out / "ignore.txt"
+        Path(final_out).mkdir(parents=True, exist_ok=True)      # Ordner sicherstellen
+        ign_output = Path(final_out) / "ignore.txt"
         ign_output.touch(exist_ok=True)
 
         print(f"[Watcher {i}]")
         print(f"  IN : {folder_in}")
         print(f"  OUT: {final_out}")
         print(f"  PAT: {pattern}")
-        print(f"  IGN: {ign_thread.name} + {ign_output}")      # zeigt Pfad der output-ignore.txt
+        print(f"  IGN: {ign_thread.name} + {ign_output}")       # Pfad der output-ignore.txt
         print()
 
         t, q, stop_evt = start_watch_thread(
@@ -65,15 +122,23 @@ if __name__ == "__main__":
             interval_seconds=interval_s,   # **Sekunden**
             use_full_path=use_full,
             ignore_file=ign_thread,        # thread-spezifische Ignore (im tmp/)
-            extra_ignore_file=ign_output,  # << Ignore-Datei im Output-Ordner des Pairs
+            extra_ignore_file=ign_output,  # Ignore-Datei im Output-Ordner des Pairs
         )
+        # Falls start_watch_thread den Thread nicht selbst startet:
+        try:
+            if hasattr(t, "is_alive") and not t.is_alive():
+                t.start()
+        except RuntimeError:
+            # war evtl. schon gestartet
+            pass
+
         watchers.append({
             "idx": i,
             "thread": t,
             "queue": q,
             "stop": stop_evt,
-            "in_root": folder_in,
-            "final_out": final_out,
+            "in_root": Path(folder_in),
+            "final_out": Path(final_out),
             "pattern": pattern,
             "interval_s": interval_s,
             "ign_thread": ign_thread,
@@ -83,16 +148,33 @@ if __name__ == "__main__":
     # globales Cache, um Doppelkopien über alle Threads hinweg zu vermeiden
     copied_cache: set[tuple[str,int]] = set()
 
+    # Sauberes Stoppen per SIGINT/SIGTERM
+    stop_now = {"flag": False}
+    def _sig_handler(signum, frame):
+        stop_now["flag"] = True
+    signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+
     try:
-        while True:
+        # Haupt-Loop: robustes, dauerhaftes Event-Processing
+        while not stop_now["flag"]:
+            if not watchers:
+                # Keine Watcher konfiguriert -> idle warten, aber weiter auf Signale hören
+                time.sleep(0.5)
+                continue
+
+            any_processed = False
+
             # Round-robin: alle Queues kurz abfragen
             for w in watchers:
                 q = w["queue"]
                 try:
-                    kind, ts, snapshot = q.get(timeout=1.0)
+                    # Kurzes Warten pro Watcher, damit CPU-Last gering bleibt
+                    kind, ts, snapshot = q.get(timeout=0.5)
                 except Exception:
                     continue
 
+                any_processed = True
                 print("-" * 60)
                 print(f"[{ts}] [Watcher {w['idx']}] Kandidaten (min. 2×): {len(snapshot)}")
                 if not snapshot:
@@ -125,9 +207,20 @@ if __name__ == "__main__":
                 if added_ign:
                     print(f"    -> {added_ign} Name(n) zu {w['ign_thread'].name} hinzugefügt")
 
-    except KeyboardInterrupt:
-        print("\nBeende Überwachung …")
-        for w in watchers:
-            w["stop"].set()
-            w["thread"].join(timeout=2)
-        print("Fertig.")
+            # Wenn gerade keine Queue-Items kamen, ganz kurz idlen -> CPU-schonend, "dauerhaft"
+            if not any_processed:
+                time.sleep(0.1)
+
+    finally:
+        graceful_stop(watchers)
+        # Optionales Unmount (nur wenn in der Config aktiviert)
+        try:
+            if bool(_get(cfg, "unmount_on_exit", False)):
+                unmount_all_from_cfg(cfg)
+        except Exception as e:
+            print(f"[WARN] Unmount beim Beenden: {e}")
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
