@@ -2,6 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 import sys, re, signal, time, queue
+from typing import Callable, Any
 
 # --- Projektroot & Imports absichern ---
 ROOT = Path(__file__).resolve().parent
@@ -10,9 +11,13 @@ if str(ROOT) not in sys.path:
 
 from src.clear import nuke_tmp
 from src.load_config import load_config
-from src.search import start_watch_thread            # unterstützt extra_ignore_file
+from src.search import start_watch_thread            # unterstützt extra_ignore_file + pre_scan_hook
 from src.copier import copy_candidates               # erzeugt mcquac.json + info.json + .ready
-from src.mounter import ensure_mounts_from_cfg, unmount_all_from_cfg  # nutzt "mounts" aus cfg
+from src.mounter import (
+    ensure_mounts_from_cfg,
+    unmount_all_from_cfg,
+    ensure_smb_mount,                                # <- für Guard pro Watcher
+)
 from src.mcquac_runner import start_runner_thread    # führt .ready-Jobs mit Nextflow aus
 
 TMP_DIR = ROOT / "tmp"
@@ -30,7 +35,7 @@ def graceful_stop(watchers: list[dict]) -> None:
             pass
     print("Fertig.")
 
-def _get(obj, name, default=None):
+def _get(obj: Any, name: str, default=None):
     # cfg kann Dict oder Objekt sein
     try:
         return getattr(obj, name)
@@ -51,6 +56,43 @@ def _drain_status(status_q: "queue.Queue[str]") -> None:
         else:
             print(msg)
 
+def _is_subpath(child: Path, parent: Path) -> bool:
+    try:
+        child = Path(child).resolve()
+        parent = Path(parent).resolve()
+        _ = child.relative_to(parent)
+        return True
+    except Exception:
+        return False
+
+def _make_mount_guard(folder_in: Path, cfg: Any) -> Callable[[], None]:
+    """
+    Liefert eine Funktion, die vor JEDEM Scan ausgeführt wird und ggf. den
+    relevanten SMB-Mount repariert. Idempotent dank ensure_smb_mount().
+    """
+    mounts = _get(cfg, "mounts", []) or []
+
+    relevant = []
+    for entry in mounts:
+        mp = _get(entry, "mountpoint")
+        if not mp:
+            continue
+        try:
+            if _is_subpath(Path(folder_in), Path(mp)):
+                relevant.append(entry)
+        except Exception:
+            continue
+
+    def guard() -> None:
+        for e in relevant:
+            try:
+                # kehrt sofort zurück, wenn Mount aktiv + listbar ist
+                ensure_smb_mount(e, non_interactive=True)
+            except Exception as ex:
+                name = _get(e, "name", f"{_get(e,'share','?')}@{_get(e,'host','?')}")
+                print(f"[WARN] Mount-Prüfung/Reparatur '{name}' fehlgeschlagen: {ex}")
+    return guard
+
 def main() -> int:
     # tmp leeren (falls unerwünscht: auskommentieren)
     cleaned = nuke_tmp(ROOT)
@@ -63,7 +105,7 @@ def main() -> int:
     print(f"  default_pattern: { _get(cfg,'default_pattern') }")
     print(f"  mcquac_path:     { _get(cfg,'mcquac_path') }\n")
 
-    # --- Systemweite Mounts aus config bereitstellen (optional) ------------- #
+    # --- Systemweite Mounts initial bereitstellen (optional) ---------------- #
     mounts = _get(cfg, "mounts", None) or []
     continue_on_mount_error = bool(_get(cfg, "continue_on_mount_error", False))
     if mounts:
@@ -120,6 +162,9 @@ def main() -> int:
         ign_output = Path(final_out) / "ignore.txt"
         ign_output.touch(exist_ok=True)
 
+        # Mount-Guard für diesen Watcher (No-Op, wenn input nicht unter einem Mountpoint liegt)
+        pre_hook = _make_mount_guard(Path(folder_in), cfg)
+
         print(f"[Watcher {i}]")
         print(f"  IN : {folder_in}")
         print(f"  OUT: {final_out}")
@@ -135,6 +180,7 @@ def main() -> int:
             use_full_path=use_full,
             ignore_file=ign_thread,        # thread-spezifische Ignore (im tmp/)
             extra_ignore_file=ign_output,  # Ignore-Datei im Output-Ordner des Pairs
+            pre_scan_hook=pre_hook,        # <- NEU: vor jedem Scan Mount checken/reparieren
         )
         # Falls start_watch_thread den Thread nicht selbst startet:
         try:

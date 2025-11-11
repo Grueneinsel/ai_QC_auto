@@ -4,7 +4,7 @@ from pathlib import Path
 from collections import defaultdict
 from queue import Queue
 from datetime import datetime
-from typing import Iterable, Union, Optional, Dict, List
+from typing import Iterable, Union, Optional, Dict, List, Callable
 import threading, time, fnmatch, hashlib
 
 from .size import file_sizes_folder  # nutzt deine bestehende Funktion
@@ -39,6 +39,7 @@ def start_watch_thread(
     use_full_path: bool = True,
     ignore_file: Union[str, Path, None] = None,         # thread-spezifische Ignore (z. B. tmp/ignore-*.txt)
     extra_ignore_file: Union[str, Path, None] = None,   # fixe zweite Ignore (z. B. ./ignore-global.txt)
+    pre_scan_hook: Optional[Callable[[], None]] = None, # NEU: Hook wird vor jedem Scan aufgerufen (z. B. Mount-Check)
 ) -> tuple[threading.Thread, Queue, threading.Event]:
     """
     Startet einen Endlos-Thread, der alle 'interval_seconds' scannt und Snapshots liefert.
@@ -48,6 +49,11 @@ def start_watch_thread(
       - ignore_file:       pro Thread, z. B. in tmp/
       - extra_ignore_file: fixe, globale Ignore-Datei im Ausführungsordner
     Beide werden bei JEDEM Scan neu eingelesen und zusammengeführt.
+
+    NEU:
+      - pre_scan_hook(): Funktion ohne Argumente, die vor JEDEM Scan ausgeführt wird.
+        Typische Verwendung: Mount prüfen und bei Bedarf remounten. Fehler im Hook
+        blockieren den Scan nicht (werden geloggt und ignoriert).
     """
     folder = Path(folder)
     ignore_path = Path(ignore_file) if ignore_file is not None else None
@@ -59,6 +65,14 @@ def start_watch_thread(
     def _worker() -> None:
         counts: Dict[tuple[str,int], int] = defaultdict(int)
         while not stop_evt.is_set():
+            # --- NEU: vor jedem Scan optionalen Hook ausführen (z. B. Mount-Heilung) ---
+            if pre_scan_hook is not None:
+                try:
+                    pre_scan_hook()
+                except Exception as ex:
+                    # bewusst unkritisch: Scan soll weiterlaufen
+                    print(f"[WARN] pre_scan_hook fehlgeschlagen: {ex}")
+
             ig1 = _read_ignore_list(ignore_path)
             ig2 = _read_ignore_list(extra_ignore_path)
             # zusammenführen (ohne Duplikate, Reihenfolge egal)
