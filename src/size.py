@@ -98,24 +98,3 @@ def file_sizes_folder(
 
     return results
 
-
-# --- CLI/Beispiel ---
-if __name__ == "__main__":
-    # Beispielpfad bitte anpassen
-    FOLDER = r"/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data"
-
-    result = file_sizes_folder(
-        folder=FOLDER,
-        # Beispiel: sowohl *.raw-Dateien als auch *.d-Ordner überwachen
-        pattern=["*std.raw", "*std.d"],
-        ignore=["defekt.std.raw", "*.tmp", "EXII12567std.raw"],
-        recursive=False,
-        print_output=True,
-        show_full_path=True,
-    )
-
-    # Return-Wert NOCHMAL ausgeben
-    if result:
-        print("\n# Ergebnisse (Return-Wert):")
-        for name, size in result.items():
-            print(f"{size}  {name}")

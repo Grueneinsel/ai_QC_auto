@@ -12,8 +12,6 @@
 
   "io_pairs": [
     { "input": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data/sample", 
-    "output": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data/out/sample_out", "pattern": "*std.raw" },
-    { "input": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/RAWS_Ds/RAWS_Ds", 
-    "output": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data/sample_out", "pattern": "*.d" }
+    "output": "/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data/out/sample_out", "pattern": "*std.raw" }
   ]
 }

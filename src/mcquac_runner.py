@@ -394,8 +394,14 @@ def _runner_loop(
             try:
                 _append_line(job.working_file, f"finished: {_iso_now()}")
                 _append_line(job.working_file, f"returncode: {rc}")
-                _rename_atomic(job.working_file, hdir / ".finish")
-                status_q.put(f"[OK] {hdir.name} -> .finish (rc={rc})")
+                if rc == 0:
+                    final_marker = hdir / ".finish"
+                    status_msg = f"[OK] {hdir.name} -> .finish (rc={rc})"
+                else:
+                    final_marker = hdir / ".error"
+                    status_msg = f"[ERR] {hdir.name} -> .error (rc={rc})"
+                _rename_atomic(job.working_file, final_marker)
+                status_q.put(status_msg)
             except Exception as e:
                 status_q.put(
                     f"[WARN] Abschluss für {hdir.name} fehlgeschlagen: {e}"
@@ -438,7 +444,7 @@ def _runner_loop(
                         "error: mcquac.json oder main.nf (aus app.json) nicht gefunden",
                     )
                     try:
-                        _rename_atomic(working, hdir / ".finish")
+                        _rename_atomic(working, hdir / ".error")
                     except Exception:
                         pass
                     status_q.put(
@@ -490,7 +496,7 @@ def _runner_loop(
                         f"error: nextflow nicht gefunden (bin={nf_bin})",
                     )
                     try:
-                        _rename_atomic(working, hdir / ".finish")
+                        _rename_atomic(working, hdir / ".error")
                     except Exception:
                         pass
                     status_q.put(
@@ -499,7 +505,7 @@ def _runner_loop(
                 except Exception as e:
                     _append_line(working, f"error: {e!r}")
                     try:
-                        _rename_atomic(working, hdir / ".finish")
+                        _rename_atomic(working, hdir / ".error")
                     except Exception:
                         pass
                     status_q.put(

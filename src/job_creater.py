@@ -30,14 +30,3 @@ def write_from_config(
     target = out_dir / template_path.name
     target.write_text(text, encoding=encoding)
     return target
-
-
-# Beispiel
-if __name__ == "__main__":
-    out_path = write_from_config(
-        input_value="/pfad/zum/input1",
-        output_value="/pfad/zum/output2",
-        inner_folder="e077e8da61058e6e9e1fa126f9cd1fc7a6c8760f1591f673db7f94d8e021ff02",
-        template_filename="mcquac.json",   # liegt in ./config/
-    )
-    print(f"Geschrieben nach: {out_path}")
