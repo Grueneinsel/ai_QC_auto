@@ -3,6 +3,27 @@ from pathlib import Path
 import fnmatch
 from typing import Iterable, Union, Dict, List, Optional
 
+
+def _dir_total_size(p: Path) -> int:
+    """
+    Berechnet die Gesamtgröße eines Verzeichnisses (rekursiv), indem die Größen
+    aller enthaltenen Dateien aufsummiert werden.
+    """
+    total = 0
+    try:
+        for child in p.rglob("*"):
+            try:
+                if child.is_file():
+                    total += child.stat().st_size
+            except Exception:
+                # Einzelne Dateien dürfen fehlschlagen, ohne alles zu blockieren
+                continue
+    except Exception:
+        # Falls das rglob selbst scheitert (z. B. Berechtigungen), geben wir 0 zurück
+        return 0
+    return total
+
+
 def file_sizes_folder(
     folder: Union[str, Path],
     pattern: Union[str, Iterable[str]] = "*.raw",
@@ -12,13 +33,20 @@ def file_sizes_folder(
     show_full_path: bool = False,
 ) -> Dict[str, int]:
     """
-    Listet Dateigrößen (Bytes) für Dateien in 'folder', gefiltert über 'pattern'
-    und ignoriert Einträge aus 'ignore'. Gibt ein Dict {name/pfad: bytes} zurück.
+    Listet Größen (Bytes) für Einträge in 'folder', gefiltert über 'pattern'
+    und ignoriert Einträge aus 'ignore'. Unterstützt:
+
+      - normale Dateien (z. B. *.raw)
+      - Verzeichnisse mit Endung '.d' (z. B. *.d), die als GANZE Einheit
+        betrachtet werden (Größe = Summe aller enthaltenen Dateien).
+
+    Rückgabe: Dict {name/pfad: bytes}
     """
     root = Path(folder).expanduser()
     if not root.is_dir():
         raise FileNotFoundError(f"Ordner nicht gefunden: {root}")
 
+    # pattern kann String oder Iterable von Strings sein
     patterns: List[str] = [pattern] if isinstance(pattern, str) else list(pattern)
     ignore_list: List[str] = list(ignore or [])
 
@@ -31,25 +59,40 @@ def file_sizes_folder(
                 return True
         return False
 
-    # Dateien sammeln
-    files: set[Path] = set()
+    # Dateien und .d-Verzeichnisse sammeln
+    entries: set[Path] = set()
     for pat in patterns:
         it = root.rglob(pat) if recursive else root.glob(pat)
         for x in it:
-            if x.is_file() and not is_ignored(x):
-                files.add(x)
+            if is_ignored(x):
+                continue
+            # Normale Dateien immer berücksichtigen
+            if x.is_file():
+                entries.add(x)
+            # Zusätzlich: Verzeichnisse mit Endung ".d" als eigene Einheit überwachen
+            elif x.is_dir() and x.name.lower().endswith(".d"):
+                entries.add(x)
 
-    if not files:
+    if not entries:
         if print_output:
-            print("Keine passenden Dateien gefunden.")
+            print("Keine passenden Dateien/Verzeichnisse gefunden.")
         return {}
 
     # Größen ermitteln & ausgeben
     results: Dict[str, int] = {}
-    for p in sorted(files, key=lambda x: str(x.relative_to(root)).lower()):
-        size = p.stat().st_size  # Bytes
+    for p in sorted(entries, key=lambda x: str(x.relative_to(root)).lower()):
+        if p.is_dir():
+            size = _dir_total_size(p)
+        else:
+            try:
+                size = p.stat().st_size  # Bytes
+            except Exception:
+                # Falls stat fehlschlägt, Eintrag überspringen
+                continue
+
         key = str(p if show_full_path else p.name)
         results[key] = size
+
         if print_output:
             print(f"{size}  {p if show_full_path else p.name}")
 
@@ -58,15 +101,17 @@ def file_sizes_folder(
 
 # --- CLI/Beispiel ---
 if __name__ == "__main__":
+    # Beispielpfad bitte anpassen
     FOLDER = r"/mnt/c/Users/info/OneDrive/Rub/StudienProject/StudienProject_01_10_2025/MS raw data"
 
     result = file_sizes_folder(
         folder=FOLDER,
-        pattern="*std.raw",                 # z.B. "*std.raw" oder ["*std.raw", "*.raw"]
-        ignore=["defekt.std.raw", "*.tmp","EXII12567std.raw"], # ignorierte Dateien/Patterns
+        # Beispiel: sowohl *.raw-Dateien als auch *.d-Ordner überwachen
+        pattern=["*std.raw", "*std.d"],
+        ignore=["defekt.std.raw", "*.tmp", "EXII12567std.raw"],
         recursive=False,
-        print_output=True,                  # True: sofortige Ausgabe in der Funktion
-        show_full_path=True,                # False: nur Dateinamen
+        print_output=True,
+        show_full_path=True,
     )
 
     # Return-Wert NOCHMAL ausgeben
