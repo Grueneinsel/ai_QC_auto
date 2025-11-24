@@ -17,6 +17,9 @@ This project watches one or more input folders for new mass‑spectrometry files
   - [FASTA & spike‑in](#fasta--spike-in)
 - [How it works](#how-it-works)
 - [Run it](#run-it)
+- [Run as a systemd service](#run-as-a-systemd-service)
+  - [Option A: User service (no SMB mounts)](#option-a-user-service-no-smb-mounts)
+  - [Option B: System/root service (with SMB mounts)](#option-b-systemroot-service-with-smb-mounts)
 - [Troubleshooting](#troubleshooting)
 - [Project layout](#project-layout)
 - [License](#license)
@@ -163,6 +166,115 @@ The `mcquac.json` template supports placeholders `%%%FASTA%%%%` and `%%%SPIKE%%%
   ./nextflow run hello
   ./nextflow run hello -with-docker
   ```
+
+## Run as a systemd service
+
+You can run MCQuaC Watcher as a long-running background service using **systemd**. This is useful on machines where the watcher should keep running across logouts and reboots.
+
+> **Important**  
+> - If you **do not use SMB mounts** (`"mounts": []` in `config/app.json`), you can run it as a **user service**.  
+> - If you **use SMB mounts**, MCQuaC Watcher needs to call `mount.cifs` and therefore must run as **root** as a **system service**.
+
+In the examples below, replace `/path/to/mcquac-watcher` with the actual project directory and adapt the Python/venv path as needed.
+
+### Option A: User service (no SMB mounts)
+
+Use this if `mounts` in `config/app.json` is empty and you do not mount any network shares from the watcher itself.
+
+1. Create a user unit:
+
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   nano ~/.config/systemd/user/mcquac-watcher.service
+
+2. Paste the following unit file:
+
+```
+[Unit]
+Description=MCQuaC Watcher (user service)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/mcquac-watcher
+ExecStart=/path/to/mcquac-watcher/.venv/bin/python -u main.py
+Restart=always
+RestartSec=10
+
+# Optional: send all output to the journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+
+```
+
+3. Reload and start:
+
+```
+systemctl --user daemon-reload
+systemctl --user start mcquac-watcher.service
+systemctl --user enable mcquac-watcher.service
+```
+
+4. View logs:
+```
+journalctl --user-unit mcquac-watcher.service -f
+```
+
+On WSL you must have systemd enabled and the distro restarted so that `systemctl --user` works.
+
+### Option B: System/root service (with SMB mounts)
+
+Use this if you configured any `mounts` in `config/app.json`. Mounting CIFS shares requires root privileges; otherwise MCQuaC Watcher will fail when trying to mount.
+
+1. Create a system unit as root:
+
+```
+sudo nano /etc/systemd/system/mcquac-watcher.service
+```
+
+2. Paste the following unit file:
+
+
+```
+[Unit]
+Description=MCQuaC Watcher (root + SMB mounts)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/mcquac-watcher
+ExecStart=/path/to/mcquac-watcher/.venv/bin/python -u main.py
+Restart=always
+RestartSec=10
+
+# Example if you want to force a specific Nextflow binary:
+# Environment="NEXTFLOW_BIN=/path/to/mcquac-watcher/nextflow"
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Reload and start:
+
+```
+sudo systemctl daemon-reload
+sudo systemctl start mcquac-watcher.service
+sudo systemctl enable mcquac-watcher.service
+```
+
+4. View logs:
+
+```
+sudo journalctl -u mcquac-watcher.service -f
+```
+
+If you previously ran MCQuaC Watcher manually, make sure the `tmp/` directory is writable for the user that systemd uses (for a root service this is usually no problem; for a user service just keep running it as the same Linux user as before).
+
 
 ## Troubleshooting
 - **Docker daemon not reachable** — ensure the service is running and your user is in the `docker` group. Log out/in or run `newgrp docker`.
