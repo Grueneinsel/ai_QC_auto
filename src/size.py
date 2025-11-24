@@ -6,8 +6,8 @@ from typing import Iterable, Union, Dict, List, Optional
 
 def _dir_total_size(p: Path) -> int:
     """
-    Berechnet die Gesamtgröße eines Verzeichnisses (rekursiv), indem die Größen
-    aller enthaltenen Dateien aufsummiert werden.
+    Compute the total size of a directory (recursively) by summing the sizes
+    of all contained files.
     """
     total = 0
     try:
@@ -16,10 +16,10 @@ def _dir_total_size(p: Path) -> int:
                 if child.is_file():
                     total += child.stat().st_size
             except Exception:
-                # Einzelne Dateien dürfen fehlschlagen, ohne alles zu blockieren
+                # Individual files may fail without blocking everything
                 continue
     except Exception:
-        # Falls das rglob selbst scheitert (z. B. Berechtigungen), geben wir 0 zurück
+        # If rglob itself fails (e.g. permissions), return 0
         return 0
     return total
 
@@ -33,20 +33,20 @@ def file_sizes_folder(
     show_full_path: bool = False,
 ) -> Dict[str, int]:
     """
-    Listet Größen (Bytes) für Einträge in 'folder', gefiltert über 'pattern'
-    und ignoriert Einträge aus 'ignore'. Unterstützt:
+    List sizes (bytes) for entries in `folder`, filtered via `pattern`
+    and ignoring entries from `ignore`. Supports:
 
-      - normale Dateien (z. B. *.raw)
-      - Verzeichnisse mit Endung '.d' (z. B. *.d), die als GANZE Einheit
-        betrachtet werden (Größe = Summe aller enthaltenen Dateien).
+      - regular files (e.g. *.raw)
+      - directories ending with '.d' (e.g. *.d), which are treated as a
+        single unit (size = sum of all contained files).
 
-    Rückgabe: Dict {name/pfad: bytes}
+    Return value: Dict {name/path: bytes}
     """
     root = Path(folder).expanduser()
     if not root.is_dir():
-        raise FileNotFoundError(f"Ordner nicht gefunden: {root}")
+        raise FileNotFoundError(f"Folder not found: {root}")
 
-    # pattern kann String oder Iterable von Strings sein
+    # pattern can be a string or an iterable of strings
     patterns: List[str] = [pattern] if isinstance(pattern, str) else list(pattern)
     ignore_list: List[str] = list(ignore or [])
 
@@ -59,35 +59,35 @@ def file_sizes_folder(
                 return True
         return False
 
-    # Dateien und .d-Verzeichnisse sammeln
+    # Collect files and .d directories
     entries: set[Path] = set()
     for pat in patterns:
         it = root.rglob(pat) if recursive else root.glob(pat)
         for x in it:
             if is_ignored(x):
                 continue
-            # Normale Dateien immer berücksichtigen
+            # Always consider regular files
             if x.is_file():
                 entries.add(x)
-            # Zusätzlich: Verzeichnisse mit Endung ".d" als eigene Einheit überwachen
+            # Additionally: treat directories ending with ".d" as single units
             elif x.is_dir() and x.name.lower().endswith(".d"):
                 entries.add(x)
 
     if not entries:
         if print_output:
-            print("Keine passenden Dateien/Verzeichnisse gefunden.")
+            print("No matching files/directories found.")
         return {}
 
-    # Größen ermitteln & ausgeben
+    # Compute sizes & optionally print
     results: Dict[str, int] = {}
     for p in sorted(entries, key=lambda x: str(x.relative_to(root)).lower()):
         if p.is_dir():
             size = _dir_total_size(p)
         else:
             try:
-                size = p.stat().st_size  # Bytes
+                size = p.stat().st_size  # bytes
             except Exception:
-                # Falls stat fehlschlägt, Eintrag überspringen
+                # If stat fails, skip this entry
                 continue
 
         key = str(p if show_full_path else p.name)
@@ -97,4 +97,3 @@ def file_sizes_folder(
             print(f"{size}  {p if show_full_path else p.name}")
 
     return results
-

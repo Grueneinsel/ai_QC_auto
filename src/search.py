@@ -12,13 +12,13 @@ import fnmatch
 import hashlib
 import re
 
-from .size import file_sizes_folder  # nutzt deine bestehende Funktion (unterstützt .d-Verzeichnisse)
+from .size import file_sizes_folder  # uses your existing helper (supports .d directories)
 
 
 def _read_ignore_list(path: Path | None) -> List[str]:
     """
-    Liest eine Ignore-Datei (eine Zeile pro Muster) und gibt eine Liste von
-    glob/fnmatch-Mustern zurück. Zeilen, die mit '#' beginnen, werden ignoriert.
+    Read an ignore file (one pattern per line) and return a list of
+    glob/fnmatch patterns. Lines starting with '#' are ignored.
     """
     if not path or not path.is_file():
         return []
@@ -28,18 +28,18 @@ def _read_ignore_list(path: Path | None) -> List[str]:
 
 def _normalize_patterns(pattern: Union[str, Iterable[str]]) -> List[str]:
     """
-    Normalisiert das pattern-Argument zu einer Liste von Glob-Mustern.
+    Normalize the pattern argument into a list of glob patterns.
 
-    Unterstützt:
-      - einfache Strings: "*std.raw"
-      - mehrere Muster in einem String, getrennt durch ',', ';' oder '|':
-          "*std.raw,*std.d" oder "*std.raw|*std.d"
-      - bereits übergebene Iterables: ["*std.raw", "*std.d"]
+    Supports:
+      - simple strings: "*std.raw"
+      - multiple patterns in a single string, separated by ',', ';' or '|':
+          "*std.raw,*std.d" or "*std.raw|*std.d"
+      - iterables that are already given: ["*std.raw", "*std.d"]
 
-    Zusätzlich:
-      - Wenn ein Muster auf ".raw" endet, wird automatisch die passende
-        ".d"-Variante ergänzt (z.B. "*std.raw" -> ["*std.raw", "*std.d"]),
-        falls noch nicht vorhanden.
+    Additionally:
+      - If a pattern ends with ".raw", the corresponding ".d" variant is
+        automatically added (e.g. "*std.raw" -> ["*std.raw", "*std.d"]),
+        if it is not already present.
     """
     patterns: List[str] = []
 
@@ -47,7 +47,7 @@ def _normalize_patterns(pattern: Union[str, Iterable[str]]) -> List[str]:
         s = pattern.strip()
         if not s:
             return []
-        # Mehrere Muster in einem String?
+        # Multiple patterns in a single string?
         if any(sep in s for sep in (",", ";", "|")):
             parts = re.split(r"[;,|]", s)
             raw_list = [p.strip() for p in parts if p.strip()]
@@ -61,9 +61,9 @@ def _normalize_patterns(pattern: Union[str, Iterable[str]]) -> List[str]:
             continue
         if p not in patterns:
             patterns.append(p)
-        # Automatisches Ergänzen der .d-Variante für .raw-Muster
+        # Automatically add the .d variant for .raw patterns
         if p.endswith(".raw"):
-            base = p[:-4]  # ".raw" abschneiden
+            base = p[:-4]  # cut off ".raw"
             alt = base + ".d"
             if alt not in patterns:
                 patterns.append(alt)
@@ -73,11 +73,11 @@ def _normalize_patterns(pattern: Union[str, Iterable[str]]) -> List[str]:
 
 def _make_hash(name: str, size: int) -> str:
     """
-    Erzeugt einen stabilen Hash aus Name und Größe. Dieser Hash wird als
-    Verzeichnisname für tmp/<hash>/... verwendet.
+    Create a stable hash from name and size. This hash is used as
+    directory name for tmp/<hash>/...
     """
     h = hashlib.sha1()
-    # Name kann Pfad oder Basisname sein; wichtig ist nur, dass er stabil bleibt.
+    # Name may be a path or a basename; it only needs to be stable.
     h.update(name.encode("utf-8", errors="replace"))
     h.update(str(size).encode("ascii", errors="replace"))
     return h.hexdigest()
@@ -89,10 +89,10 @@ def _finalize_snapshot(
     min_stable_scans: int = 2,
 ) -> List[Dict[str, Union[str, int]]]:
     """
-    Erzeugt aus der History eine Snapshot-Liste für den Kopier-Thread.
+    Create a snapshot list for the copy thread from the history.
 
     history: { name: (size, stable_count) }
-    Ein Eintrag gilt als 'stabil', wenn stable_count >= min_stable_scans ist.
+    An entry is considered 'stable' if stable_count >= min_stable_scans.
     """
     snapshot: List[Dict[str, Union[str, int]]] = []
     for name, (size, stable_count) in history.items():
@@ -106,7 +106,7 @@ def _finalize_snapshot(
                 }
             )
 
-    # deterministische Reihenfolge (nur kosmetisch)
+    # deterministic order (cosmetic only)
     snapshot.sort(key=lambda d: str(d.get("name", "")).lower())
     return snapshot
 
@@ -123,28 +123,28 @@ def start_watch_thread(
     pre_scan_hook: Optional[Callable[[Path], None]] = None,
 ) -> tuple[threading.Thread, Queue, threading.Event]:
     """
-    Startet einen Hintergrund-Thread, der 'folder' in einem festen Intervall
-    nach passenden Dateien/Verzeichnissen durchsucht und bei stabilen Kandidaten
-    Snapshots in eine Queue schreibt.
+    Start a background thread that scans `folder` at a fixed interval
+    for matching files/directories and writes snapshots to a queue
+    once candidates are stable.
 
-    Rückgabe:
+    Returns:
       (thread, queue, stop_event)
 
-    Queue-Events:
+    Queue events:
       ("snapshot", iso_timestamp, snapshot_list)
-        - snapshot_list: Liste von Dicts mit Schlüsseln name/size/hash/count
+        - snapshot_list: list of dicts with keys name/size/hash/count
     """
     folder = Path(folder).expanduser()
     if not folder.is_dir():
-        raise FileNotFoundError(f"Watch-Ordner existiert nicht: {folder}")
+        raise FileNotFoundError(f"Watch folder does not exist: {folder}")
 
-    # Muster normalisieren (+ .d-Autovervollständigung)
+    # Normalize patterns (+ automatic .d completion)
     patterns = _normalize_patterns(pattern)
 
     q: Queue = Queue()
     stop_evt = threading.Event()
 
-    # History pro Name: (size, stable_count)
+    # History per name: (size, stable_count)
     history: Dict[str, Tuple[int, int]] = {}
 
     def _worker() -> None:
@@ -156,15 +156,15 @@ def start_watch_thread(
                     try:
                         pre_scan_hook(folder)
                     except Exception:
-                        # Pre-Scan-Fehler sollen nicht den Watcher töten
+                        # Pre-scan failures should not kill the watcher
                         pass
 
                 ig1 = _read_ignore_list(ignore_file)
                 ig2 = _read_ignore_list(extra_ignore_file)
-                # zusammenführen (ohne Duplikate, Reihenfolge egal)
+                # Merge (no duplicates, order irrelevant)
                 ignores = list(dict.fromkeys(ig1 + ig2))
 
-                # Größen der passenden Dateien/Verzeichnisse bestimmen
+                # Determine sizes of matching files/directories
                 sizes_now = file_sizes_folder(
                     folder=folder,
                     pattern=patterns,
@@ -174,7 +174,7 @@ def start_watch_thread(
                     show_full_path=use_full_path,
                 )
 
-                # History aktualisieren: Stabilität über mehrere Scans verfolgen
+                # Update history: track stability over multiple scans
                 new_history: Dict[str, Tuple[int, int]] = {}
 
                 for name, size in sizes_now.items():
@@ -182,11 +182,11 @@ def start_watch_thread(
                     if prev_size == size:
                         stable_count = min(prev_count + 1, 1_000_000)
                     else:
-                        # neu gesehen oder Größe hat sich geändert -> wieder bei 1 beginnen
+                        # newly seen or size changed -> start at 1 again
                         stable_count = 1
                     new_history[name] = (size, stable_count)
 
-                # History auf aktuelle Kandidaten beschränken
+                # Restrict history to current candidates
                 history = new_history
 
                 snapshot = _finalize_snapshot(history, min_stable_scans=2)
@@ -194,19 +194,19 @@ def start_watch_thread(
                 q.put(("snapshot", ts, snapshot))
 
             except Exception as e:
-                # Fehler als Event in die Queue senden, damit der Hauptthread
-                # reagieren/loggen kann, aber der Watcher weiterläuft.
+                # Send errors as events to the queue so the main thread can
+                # react/log, but keep the watcher running.
                 ts = datetime.now().isoformat(timespec="seconds")
                 q.put(("error", ts, repr(e)))
 
-            # Warteintervall – mit früherem Abbruch, falls stop_evt gesetzt wird
+            # Wait interval – with early exit if stop_evt is set
             end_time = time.time() + max(1, int(interval_seconds))
             while time.time() < end_time:
                 if stop_evt.is_set():
                     break
                 time.sleep(0.2)
 
-        # optionale Abschlussmeldung
+        # Optional final message
         ts = datetime.now().isoformat(timespec="seconds")
         q.put(("stopped", ts, []))
 

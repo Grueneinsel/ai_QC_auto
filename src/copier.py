@@ -8,25 +8,25 @@ from functools import lru_cache
 import json
 import shutil
 
-# Projektwurzel (eine Ebene über /src)
+# Project root (one level above /src)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# FASTA: Top-Level in config/fasta
+# FASTA: top-level in config/fasta
 FASTA_DIR = (PROJECT_ROOT / "config" / "fasta").resolve()
 
-# SPIKE: Top-Level in config/spike
+# SPIKE: top-level in config/spike
 SPIKE_DIR = (PROJECT_ROOT / "config" / "spike").resolve()
 
-# ruft die Job-Erzeugung auf
+# triggers job creation
 from .job_creater import write_from_config
 
 
-# ----------------------------- Hilfsfunktionen -----------------------------
+# ----------------------------- Helper functions -----------------------------
 
 
 def _ensure_hash_dirs(tmp_dir: Path, hash_str: str) -> tuple[Path, Path, Path]:
     """
-    Legt tmp/<hash>/{input,output} an und gibt diese Pfade zurück.
+    Create tmp/<hash>/{input,output} and return these paths.
     """
     hash_dir = tmp_dir / hash_str
     input_dir = hash_dir / "input"
@@ -38,9 +38,9 @@ def _ensure_hash_dirs(tmp_dir: Path, hash_str: str) -> tuple[Path, Path, Path]:
 
 def _resolve_source_path(name_key: str, folder: Path) -> Path:
     """
-    Wandelt das 'name'-Feld aus dem Snapshot in einen absoluten Pfad um.
-    - Wenn 'name' bereits absolut ist -> direkt verwenden.
-    - Sonst relativ zu 'folder'.
+    Turn the 'name' field from the snapshot into an absolute path.
+    - If 'name' is already absolute -> use directly.
+    - Otherwise, resolve relative to 'folder'.
     """
     p = Path(name_key)
     return p if p.is_absolute() else (folder / p)
@@ -48,7 +48,7 @@ def _resolve_source_path(name_key: str, folder: Path) -> Path:
 
 def _append_to_ignore_filenames(ignore_file: Path, names: Iterable[str]) -> int:
     """
-    Hängt Basis-Dateinamen an eine ignore.txt an (wenn noch nicht vorhanden).
+    Append base file names to an ignore.txt (if not already present).
     """
     ignore_file.parent.mkdir(parents=True, exist_ok=True)
     existing: Set[str] = set()
@@ -86,11 +86,12 @@ def _write_info_json(
     overwrite: bool = False,
 ) -> Path:
     """
-    Schreibt info.json in tmp/<hash>/ mit Meta-Informationen:
-    - Pfade zu tmp/input, tmp/output, mcquac.json
-    - Quelle (Name, absoluter Pfad, Größe, ob Verzeichnis)
-    - FASTA-/Spike-Info
-    - Optional: Watcher-Infos (input_root, final_output_root, pattern, interval_seconds, ignore_files)
+    Write info.json into tmp/<hash>/ with meta information:
+    - paths to tmp/input, tmp/output, mcquac.json
+    - source (name, absolute path, size, whether it is a directory)
+    - FASTA / spike info
+    - Optional: watcher info (input_root, final_output_root, pattern,
+      interval_seconds, ignore_files)
     """
     info_path = hash_dir / filename
     if info_path.exists() and not overwrite:
@@ -113,7 +114,7 @@ def _write_info_json(
             "name": src_abs.name,
             "absolute_path": str(src_abs),
             "size_bytes": int(size),
-            # NEU: Hilfsflag, ob es sich um einen Ordner (z. B. *.d) handelt
+            # Helper flag indicating whether this is a directory (e.g. *.d)
             "is_dir": src_abs.is_dir(),
         },
         "fasta": {
@@ -141,7 +142,7 @@ def _write_info_json(
 
 def _write_ready_file(hash_dir: Path, filename: str = ".ready", overwrite: bool = False) -> Path:
     """
-    Legt tmp/<hash>/.ready an (oder lässt vorhandene Datei stehen).
+    Create tmp/<hash>/.ready (or keep an existing file).
     """
     p = hash_dir / filename
     if p.exists() and not overwrite:
@@ -150,13 +151,13 @@ def _write_ready_file(hash_dir: Path, filename: str = ".ready", overwrite: bool 
     return p
 
 
-# ----------------------------- FASTA finden -----------------------------
+# ----------------------------- FASTA lookup -----------------------------
 
 
 def _find_fasta_file(base_dir: Path = FASTA_DIR) -> Optional[Path]:
     """
-    Sucht im Top-Level von config/fasta nach *.fasta.
-    Bei mehreren: jüngste zuerst, dann größere, dann Name.
+    Search top-level of config/fasta for *.fasta.
+    If multiple exist: prefer newer, then larger, then by name.
     """
     if not base_dir.is_dir():
         return None
@@ -179,13 +180,13 @@ def _cached_fasta_file() -> Optional[Path]:
     return _find_fasta_file(FASTA_DIR)
 
 
-# ----------------------------- SPIKE finden -----------------------------
+# ----------------------------- SPIKE lookup -----------------------------
 
 
 def _find_spike_file(base_dir: Path = SPIKE_DIR) -> Optional[Path]:
     """
-    Sucht im Top-Level von config/spike nach *.csv.
-    Bei mehreren: jüngste zuerst, dann größere, dann Name.
+    Search top-level of config/spike for *.csv.
+    If multiple exist: prefer newer, then larger, then by name.
     """
     if not base_dir.is_dir():
         return None
@@ -208,12 +209,12 @@ def _cached_spike_file() -> Optional[Path]:
     return _find_spike_file(SPIKE_DIR)
 
 
-# ---------------------- mcquac.json injizieren (+ Platzhalter) ----------------------
+# ---------------------- mcquac.json injection (+ placeholders) ----------------------
 
 
 def _json_replace_placeholder(obj: Any, placeholder: str, value: str) -> Any:
     """
-    Ersetzt rekursiv Strings, die exakt dem Platzhalter entsprechen.
+    Recursively replace strings that exactly match the given placeholder.
     """
     if isinstance(obj, dict):
         return {k: _json_replace_placeholder(v, placeholder, value) for k, v in obj.items()}
@@ -226,7 +227,7 @@ def _json_replace_placeholder(obj: Any, placeholder: str, value: str) -> Any:
 
 def _inject_fasta_file_in_mcquac(mcquac_path: Path) -> None:
     """
-    Trägt 'main_fasta_file' ein und ersetzt optionale FASTA-Platzhalter.
+    Set 'main_fasta_file' and replace optional FASTA placeholders.
     """
     if not mcquac_path.is_file():
         return
@@ -239,7 +240,7 @@ def _inject_fasta_file_in_mcquac(mcquac_path: Path) -> None:
         return
 
     data["main_fasta_file"] = str(fasta)
-    # Platzhalter-Varianten ersetzen (zur Sicherheit beide)
+    # Replace placeholder variants (both, just to be safe)
     for ph in ("%%%FASTA%%%", "%%%FASTA%%%%"):
         data = _json_replace_placeholder(data, ph, str(fasta))
 
@@ -251,7 +252,7 @@ def _inject_fasta_file_in_mcquac(mcquac_path: Path) -> None:
 
 def _inject_spike_file_in_mcquac(mcquac_path: Path) -> None:
     """
-    Trägt 'main_spike_file' ein und ersetzt optionale SPIKE-Platzhalter.
+    Set 'main_spike_file' and replace optional SPIKE placeholders.
     """
     if not mcquac_path.is_file():
         return
@@ -273,7 +274,7 @@ def _inject_spike_file_in_mcquac(mcquac_path: Path) -> None:
         pass
 
 
-# ----------------------------- Hauptfunktion -----------------------------
+# ----------------------------- Main function -----------------------------
 
 
 def copy_candidates(
@@ -282,35 +283,35 @@ def copy_candidates(
     folder: Path,
     tmp_dir: Path,
     copied_cache: Set[Tuple[str, int]],
-    ignore_file: Path | None = None,  # je Thread eigene Datei im tmp/
+    ignore_file: Path | None = None,  # per-thread file in tmp/
     add_to_ignore: bool = True,
-    # Zusatz: Metadaten für info.json (werden pro Hash geschrieben)
+    # Additional metadata for info.json (written per hash)
     info_for_hash: Optional[dict] = None,
 ) -> tuple[List[Path], int]:
     """
-    Kopiert alle Items (name,size,hash,count) einmalig nach tmp/<hash>/input/.
-    Verhindert Doppelkopien via copied_cache (name,size).
+    Copy all items (name,size,hash,count) once into tmp/<hash>/input/.
+    Prevent duplicate copies via copied_cache (name,size).
 
-    Zusätzlich:
-      - erzeugt mcquac.json via write_from_config(...) mit
-        INPUT=tmp/<hash>/input und OUTPUT=tmp/<hash>/output
-      - setzt 'main_fasta_file' (gefunden in config/fasta) und
-        'main_spike_file' (gefunden in config/spike)
-      - ersetzt optionale Platzhalter %%%FASTA%%% / %%%FASTA%%%% und
+    Additionally:
+      - create mcquac.json via write_from_config(...) with
+        INPUT=tmp/<hash>/input and OUTPUT=tmp/<hash>/output
+      - set 'main_fasta_file' (found in config/fasta) and
+        'main_spike_file' (found in config/spike)
+      - replace optional placeholders %%%FASTA%%% / %%%FASTA%%%% and
         %%%SPIKE%%% / %%%SPIKE%%%% in mcquac.json
-      - schreibt info.json mit allen Pfaden & Parametern für später (aus info_for_hash)
-      - legt .ready im Hash-Ordner an, sobald Job & Info erzeugt sind
+      - write info.json with all paths & parameters for later use (from info_for_hash)
+      - create .ready in the hash directory once job & info have been generated
 
-    WICHTIG:
-      - Es werden sowohl normale Dateien (z.B. *.raw) als auch Verzeichnisse
-        (z.B. *.d) unterstützt. Verzeichnisse werden komplett rekursiv kopiert.
+    IMPORTANT:
+      - Supports both regular files (e.g. *.raw) and directories
+        (e.g. *.d). Directories are copied recursively.
     """
     folder = Path(folder)
     tmp_dir = Path(tmp_dir)
 
     copied_paths: List[Path] = []
     names_for_ignore: List[str] = []
-    jobs_written_for_hash: Set[str] = set()  # in diesem Aufruf bereits erzeugte Jobs/Infos
+    jobs_written_for_hash: Set[str] = set()  # jobs/info already created in this call
 
     for item in snapshot:
         try:
@@ -318,7 +319,7 @@ def copy_candidates(
             size = item["size"]
             h = item["hash"]
         except KeyError:
-            # falls Snapshot-Eintrag nicht das erwartete Format hat, überspringen
+            # snapshot entry does not have the expected shape -> skip
             continue
 
         key = (name, size)
@@ -327,22 +328,22 @@ def copy_candidates(
 
         src = _resolve_source_path(name, folder)
         if not src.exists():
-            # Quelle ist verschwunden -> überspringen
+            # source disappeared -> skip
             continue
 
-        # Zielordner vorbereiten
+        # prepare target directories
         hash_dir, input_dir, output_dir = _ensure_hash_dirs(tmp_dir, h)
 
-        # Zielpfad (gleicher Name wie Quelle, im input/)
+        # target path (same name as source, inside input/)
         dst = input_dir / src.name
 
         try:
-            # Dateien UND Verzeichnisse behandeln
+            # handle files AND directories
             if src.is_dir():
-                # z.B. Bruker-Folder *.d
+                # e.g. Bruker folders *.d
                 if dst.exists() and dst.is_file():
                     dst.unlink()
-                # dirs_exist_ok=True erlaubt Wiederanläufe ohne Fehler
+                # dirs_exist_ok=True allows retries without errors
                 shutil.copytree(src, dst, dirs_exist_ok=True)
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
@@ -351,23 +352,23 @@ def copy_candidates(
             copied_cache.add(key)
             copied_paths.append(dst)
             if add_to_ignore and ignore_file is not None:
-                # nur der Basename kommt in die ignore.txt
+                # only the basename is written to ignore.txt
                 names_for_ignore.append(src.name)
 
-            # pro Hash: mcquac.json & info.json & .ready (nur 1x pro Aufruf)
+            # per hash: mcquac.json & info.json & .ready (only once per call)
             if h not in jobs_written_for_hash:
                 try:
-                    # mcquac.json erzeugen
+                    # create mcquac.json
                     write_from_config(
                         input_value=str(input_dir),
                         output_value=str(output_dir),
-                        inner_folder=h,  # schreibt nach ./tmp/<hash>/mcquac.json
+                        inner_folder=h,  # writes to ./tmp/<hash>/mcquac.json
                         template_filename="mcquac.json",
                         config_dir="config",
                     )
 
                     mcquac = hash_dir / "mcquac.json"
-                    # FASTA & SPIKE eintragen (und Platzhalter ersetzen)
+                    # inject FASTA & SPIKE (and replace placeholders)
                     _inject_fasta_file_in_mcquac(mcquac)
                     _inject_spike_file_in_mcquac(mcquac)
 
@@ -382,17 +383,17 @@ def copy_candidates(
                         info_extra=info_for_hash,
                     )
 
-                    # .ready-Datei anlegen
+                    # create .ready file
                     _write_ready_file(hash_dir)
 
                 except Exception:
-                    # bewusst still; optional Logging/Print ergänzen
+                    # intentionally silent; add logging/prints if needed
                     pass
 
                 jobs_written_for_hash.add(h)
 
         except Exception:
-            # bewusst still; optional Logging/Print ergänzen
+            # intentionally silent; add logging/prints if needed
             pass
 
     added = 0

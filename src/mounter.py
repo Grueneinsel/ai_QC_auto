@@ -7,18 +7,22 @@ from typing import Any, Dict
 def _which(name: str) -> str | None:
     return shutil.which(name)
 
+
 def _need_bins():
     for b in ("mount",):
         if not _which(b):
-            raise RuntimeError(f"'{b}' nicht gefunden. Bitte installieren.")
+            raise RuntimeError(f"'{b}' not found. Please install it.")
     if not (_which("mount.cifs") or pathlib.Path("/sbin/mount.cifs").exists()):
-        raise RuntimeError("mount.cifs fehlt. Bitte 'sudo apt install cifs-utils' ausführen.")
+        raise RuntimeError("mount.cifs is missing. Please run 'sudo apt install cifs-utils'.")
+
 
 def _is_root() -> bool:
     return os.geteuid() == 0
 
+
 def _mountpoint_active(path: str) -> bool:
-    return subprocess.run(["mountpoint","-q",path]).returncode == 0
+    return subprocess.run(["mountpoint", "-q", path]).returncode == 0
+
 
 def _try_list(path: str) -> bool:
     try:
@@ -27,6 +31,7 @@ def _try_list(path: str) -> bool:
     except Exception:
         return False
 
+
 def _check_port(host: str, port: int = 445, timeout: float = 2.0) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -34,17 +39,23 @@ def _check_port(host: str, port: int = 445, timeout: float = 2.0) -> bool:
     except OSError:
         return False
 
+
 def _ping(host: str) -> bool:
     try:
-        return subprocess.run(["ping","-c","1","-w","2",host],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        return subprocess.run(
+            ["ping", "-c", "1", "-w", "2", host],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
     except Exception:
-        return True  # ping optional
+        return True  # ping is optional
+
 
 def _get(d: Any, key: str, default: Any = None) -> Any:
     if isinstance(d, dict):
         return d.get(key, default)
     return getattr(d, key, default)
+
 
 def _build_creds(username: str, password: str, domain: str | None) -> str:
     content = [f"username={username}", f"password={password}"]
@@ -56,10 +67,11 @@ def _build_creds(username: str, password: str, domain: str | None) -> str:
     os.chmod(tmp.name, 0o600)
     return tmp.name
 
-# --------- Kern: Einzelnes SMB-Mount (Passwort nur aus app.json) ---------
+
+# --------- Core: single SMB mount (password only from app.json) ---------
 def ensure_smb_mount(entry: Any, *, non_interactive: bool = True) -> str:
     """
-    entry: Dict/Objekt mit Feldern:
+    entry: dict/object with fields:
       name, host, share, mountpoint, username, password,
       domain(optional), vers(optional), file_mode/dir_mode(optional), extra_opts(optional)
     """
@@ -67,7 +79,7 @@ def ensure_smb_mount(entry: Any, *, non_interactive: bool = True) -> str:
     share       = _get(entry, "share")
     mountpoint  = pathlib.Path(str(_get(entry, "mountpoint")))
     username    = _get(entry, "username")
-    password    = _get(entry, "password")          # <-- Pflichtfeld in app.json
+    password    = _get(entry, "password")          # <-- required field in app.json
     domain      = _get(entry, "domain")
     vers        = _get(entry, "vers")
     file_mode   = str(_get(entry, "file_mode", "0664"))
@@ -75,20 +87,25 @@ def ensure_smb_mount(entry: Any, *, non_interactive: bool = True) -> str:
     extra_opts  = list(_get(entry, "extra_opts", []) or [])
 
     if not all([host, share, mountpoint, username, password]):
-        raise ValueError("SMB-Eintrag unvollständig: host/share/mountpoint/username/password erforderlich.")
+        raise ValueError(
+            "Incomplete SMB entry: host/share/mountpoint/username/password are required."
+        )
 
     mountpoint.mkdir(parents=True, exist_ok=True)
 
-    # Netzwerk erreichbar?
+    # Network reachable?
     if not _ping(host) or not _check_port(host, 445):
-        raise RuntimeError(f"Host {host} nicht erreichbar (Ping/Port 445).")
+        raise RuntimeError(f"Host {host} not reachable (ping/port 445).")
 
-    # Bereits gemountet?
+    # Already mounted?
     if _mountpoint_active(str(mountpoint)):
         if _try_list(str(mountpoint)):
             return str(mountpoint)
-        subprocess.run(["umount","-f",str(mountpoint)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["umount", "-f", str(mountpoint)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     uid, gid = os.getuid(), os.getgid()
     base_opts = [
@@ -103,32 +120,44 @@ def ensure_smb_mount(entry: Any, *, non_interactive: bool = True) -> str:
         last_err = None
         for v in vers_candidates:
             opts = base_opts + [f"credentials={creds_path}", f"vers={v}"]
-            cmd  = ["mount","-t","cifs", f"//{host}/{share}", str(mountpoint), "-o", ",".join(opts)]
+            cmd  = [
+                "mount", "-t", "cifs",
+                f"//{host}/{share}",
+                str(mountpoint),
+                "-o", ",".join(opts),
+            ]
             try:
                 subprocess.run(cmd, check=True)
                 time.sleep(0.2)
                 if not _try_list(str(mountpoint)):
-                    raise RuntimeError("Mount ok, aber Verzeichnislistung fehlgeschlagen.")
+                    raise RuntimeError("Mount succeeded, but directory listing failed.")
                 print(f"[mount] //{host}/{share} -> {mountpoint} (SMB {v})")
                 return str(mountpoint)
             except subprocess.CalledProcessError as e:
                 last_err = e
             except Exception as e:
                 last_err = e
-        raise last_err or RuntimeError("Mount fehlgeschlagen.")
+        raise last_err or RuntimeError("Mount failed.")
     finally:
-        try: os.remove(creds_path)
-        except FileNotFoundError: pass
+        try:
+            os.remove(creds_path)
+        except FileNotFoundError:
+            pass
+
 
 # --------- Public API ---------
-def ensure_mounts_from_cfg(cfg: Any, *, best_effort: bool = False, non_interactive: bool = True) -> Dict[str, str]:
+def ensure_mounts_from_cfg(
+    cfg: Any, *, best_effort: bool = False, non_interactive: bool = True
+) -> Dict[str, str]:
     """
-    Liest 'mounts' aus cfg und mountet alle. Passwort MUSS in jedem Eintrag stehen.
-    Rückgabe: {name: "OK" | "FAIL: <msg>"}
+    Read 'mounts' from cfg and mount all entries. A password MUST be present in each entry.
+    Returns: {name: "OK" | "FAIL: <msg>"}.
     """
     _need_bins()
     if not _is_root():
-        raise PermissionError("Bitte als root / via sudo starten (mount erfordert Root-Rechte).")
+        raise PermissionError(
+            "Please run as root / via sudo (mount requires root privileges)."
+        )
 
     mounts = _get(cfg, "mounts", None)
     if not mounts:
@@ -144,9 +173,10 @@ def ensure_mounts_from_cfg(cfg: Any, *, best_effort: bool = False, non_interacti
             msg = f"FAIL: {e}"
             result[name] = msg
             if not best_effort:
-                raise RuntimeError(f"Mount '{name}' fehlgeschlagen: {e}") from e
+                raise RuntimeError(f"Mount '{name}' failed: {e}") from e
             print(f"[warn] {msg}")
     return result
+
 
 def unmount_all_from_cfg(cfg: Any) -> None:
     mounts = _get(cfg, "mounts", None) or []

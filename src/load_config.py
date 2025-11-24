@@ -6,24 +6,24 @@ from typing import List, Any, Optional
 import json, os
 
 """
-Konfigurations-Lader
+Configuration loader
 --------------------
 
-Liest `config/app.json`, validiert die Inhalte und gibt eine `AppConfig` zurück.
-Unterstützt optionale Felder wie `mounts` und **neu** `nextflow_bin`.
+Reads `config/app.json`, validates its contents and returns an `AppConfig`.
+Supports optional fields such as `mounts` and `nextflow_bin`.
 
-Wichtige Felder in app.json:
+Important fields in app.json:
 - interval_minutes (int >= 0)
-- mcquac_path (Pfad zu main.nf)
+- mcquac_path (path to main.nf)
 - default_pattern (glob)
-- io_pairs: Liste von {input, output, pattern?}
+- io_pairs: list of {input, output, pattern?}
 - mounts: optional
 - continue_on_mount_error: optional (bool)
 - unmount_on_exit: optional (bool)
-- nextflow_bin: optional (Pfad zur Nextflow-Binary)
+- nextflow_bin: optional (path to the Nextflow binary)
 """
 
-# Projektwurzel: ein Ordner oberhalb von /src
+# Project root: one directory above /src
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -59,11 +59,11 @@ class AppConfig:
     mounts: List[MountEntry] = field(default_factory=list)
     continue_on_mount_error: bool = False
     unmount_on_exit: bool = False
-    nextflow_bin: Optional[Path] = None  # <- NEU: optionaler Pfad zur Nextflow-Binary
+    nextflow_bin: Optional[Path] = None  # <- NEW: optional path to the Nextflow binary
 
 
 def _expand(p: str, base: Path) -> Path:
-    """Umgebungsvariablen und ~ expandieren; relative Pfade relativ zu `base`."""
+    """Expand environment variables and ~; resolve relative paths relative to `base`."""
     s = os.path.expandvars(os.path.expanduser(str(p)))
     pp = Path(s)
     return (base / pp).resolve() if not pp.is_absolute() else pp.resolve()
@@ -71,12 +71,12 @@ def _expand(p: str, base: Path) -> Path:
 
 def _read_io_pairs(pairs_field: Any, default_pattern: str) -> List[IOPair]:
     if not isinstance(pairs_field, list) or not pairs_field:
-        raise ValueError("'io_pairs' muss eine nichtleere Liste sein.")
+        raise ValueError("'io_pairs' must be a non-empty list.")
 
     io_pairs: List[IOPair] = []
     for i, item in enumerate(pairs_field, start=1):
         if not isinstance(item, dict) or "input" not in item or "output" not in item:
-            raise ValueError(f"Eintrag {i} in 'io_pairs' muss {{'input':..., 'output':...}} enthalten.")
+            raise ValueError(f"Entry {i} in 'io_pairs' must contain {{'input': ..., 'output': ...}}.")
         in_p = _expand(item["input"], PROJECT_ROOT)
         out_p = _expand(item["output"], PROJECT_ROOT)
         pat = str(item.get("pattern", default_pattern) or default_pattern)
@@ -88,12 +88,12 @@ def _read_mounts(mounts_field: Any) -> List[MountEntry]:
     if mounts_field is None:
         return []
     if not isinstance(mounts_field, list):
-        raise ValueError("'mounts' muss eine Liste sein.")
+        raise ValueError("'mounts' must be a list.")
 
     mounts: List[MountEntry] = []
     for i, item in enumerate(mounts_field, start=1):
         if not isinstance(item, dict):
-            raise ValueError(f"Mount-Eintrag {i}: erwartet ein Objekt.")
+            raise ValueError(f"Mount entry {i}: expected an object.")
 
         host = str(item.get("host", "")).strip()
         share = str(item.get("share", "")).strip()
@@ -103,7 +103,7 @@ def _read_mounts(mounts_field: Any) -> List[MountEntry]:
 
         if not (host and share and mp_raw and username and password):
             raise ValueError(
-                f"Mount-Eintrag {i}: 'host', 'share', 'mountpoint', 'username', 'password' sind Pflicht."
+                f"Mount entry {i}: 'host', 'share', 'mountpoint', 'username', 'password' are required."
             )
 
         mountpoint = _expand(mp_raw, PROJECT_ROOT)
@@ -139,18 +139,21 @@ def _read_mounts(mounts_field: Any) -> List[MountEntry]:
 
 
 def load_config(cfg_path: Path | None = None) -> AppConfig:
-    """Lädt `config/app.json` und gibt eine validierte `AppConfig` zurück (inkl. `mounts`, `nextflow_bin`)."""
+    """
+    Load `config/app.json` and return a validated `AppConfig`
+    (including `mounts` and `nextflow_bin`).
+    """
     cfg_path = cfg_path or (PROJECT_ROOT / "config" / "app.json")
     if not cfg_path.is_file():
-        raise FileNotFoundError(f"Konfigurationsdatei nicht gefunden: {cfg_path}")
+        raise FileNotFoundError(f"Configuration file not found: {cfg_path}")
 
     raw: Any = json.loads(cfg_path.read_text(encoding="utf-8"))
 
-    # Pflichtfelder prüfen (mounts/nextflow_bin sind optional)
+    # Check required fields (mounts/nextflow_bin are optional)
     required = ("interval_minutes", "mcquac_path", "default_pattern", "io_pairs")
     missing = [k for k in required if k not in raw]
     if missing:
-        raise ValueError(f"Fehlende Felder in config: {', '.join(missing)}")
+        raise ValueError(f"Missing fields in config: {', '.join(missing)}")
 
     # interval_minutes
     try:
@@ -158,12 +161,12 @@ def load_config(cfg_path: Path | None = None) -> AppConfig:
         if interval_minutes < 0:
             raise ValueError
     except Exception:
-        raise ValueError("'interval_minutes' muss eine nichtnegative ganze Zahl sein.")
+        raise ValueError("'interval_minutes' must be a non-negative integer.")
 
     # default_pattern
     default_pattern = str(raw["default_pattern"]).strip()
     if not default_pattern:
-        raise ValueError("'default_pattern' darf nicht leer sein.")
+        raise ValueError("'default_pattern' must not be empty.")
 
     # mcquac_path
     mcquac_path = _expand(raw["mcquac_path"], PROJECT_ROOT)

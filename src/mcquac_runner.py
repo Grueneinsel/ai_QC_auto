@@ -22,7 +22,7 @@ except Exception:
 
     def load_config(*args, **kwargs):  # type: ignore
         raise RuntimeError(
-            "load_config() nicht verfügbar – bitte innerhalb des Projekts ausführen."
+            "load_config() not available – please run this inside the project."
         )
 
 
@@ -35,7 +35,7 @@ class _RunningJob:
     started_at: datetime
 
 
-# ----------------------------- Hilfsfunktionen -----------------------------
+# ----------------------------- Helper functions -----------------------------
 
 
 def _iso_now() -> str:
@@ -113,11 +113,11 @@ def _resolve_nextflow_bin(cfg: AppConfig) -> str:
     return found or "nextflow"
 
 
-# ------ Post-Processing: Output / Logs kopieren, ignore.txt aktualisieren, tmp leeren
+# ------ Post-processing: copy output/logs, update ignore.txt, clean tmp ------
 
 
 def _unique_subdir(root: Path, base_name: str) -> Path:
-    """Erzeuge eindeutigen Zielordner root/base_name, bei Kollision mit Zeitstempel."""
+    """Create a unique target dir root/base_name, on collision append timestamp/counter."""
     root.mkdir(parents=True, exist_ok=True)
     cand = root / base_name
     if not cand.exists():
@@ -135,7 +135,7 @@ def _unique_subdir(root: Path, base_name: str) -> Path:
 
 
 def _copy_output_tree(src_dir: Path, dst_dir: Path) -> None:
-    """Kopiere den *Inhalt* von src_dir nach dst_dir (nicht den Ordner selbst)."""
+    """Copy the *contents* of src_dir into dst_dir (not the directory itself)."""
     if not src_dir.is_dir():
         return
     dst_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +152,7 @@ def _append_to_ignore_file(ignore_file: Path, filename: str) -> None:
     line = (filename or "").strip()
     if not line:
         return
-    # Dedupe: Datei kurz einlesen, ansonsten hinten anhängen
+    # De-duplicate: read file once, otherwise append
     try:
         if ignore_file.exists():
             existing = {
@@ -170,7 +170,7 @@ def _append_to_ignore_file(ignore_file: Path, filename: str) -> None:
 
 
 def _empty_dir(d: Path) -> None:
-    """Inhalt eines Ordners löschen, Ordner bestehen lassen."""
+    """Delete the contents of a directory, keep the directory itself."""
     if not d.exists():
         return
     for child in d.iterdir():
@@ -185,23 +185,23 @@ def _empty_dir(d: Path) -> None:
 
 def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
     """
-    Wird bei rc==0 aufgerufen:
+    Called when rc == 0:
 
-    - Sucht im tmp_output_dir nach *.hdf5 (rekursiv).
-    - Wählt die "beste" Datei (zuletzt geändert, bei Gleichstand größere).
-    - Kopiert sie als <SRC_STEM>.hdf5 direkt nach final_output_root.
-      Beispiel: EXII12567std.hdf5 liegt direkt im Output-Ordner.
-    - Aktualisiert ignore.txt.
-    - Leert tmp/<hash>/{input,output,work}.
+    - Search tmp_output_dir for *.hdf5 (recursively).
+    - Select the "best" file (most recently modified, then larger).
+    - Copy it as <SRC_STEM>.hdf5 directly into final_output_root.
+      Example: EXII12567std.hdf5 is placed directly in the output folder.
+    - Update ignore.txt.
+    - Clear tmp/<hash>/{input,output,work}.
     """
     info = _read_json(hash_dir / "info.json")
     if not isinstance(info, dict):
         status_q.put(
-            f"[WARN] {hash_dir.name}: info.json fehlt/korrupt – überspringe Post-Processing"
+            f"[WARN] {hash_dir.name}: info.json missing/corrupt – skipping post-processing"
         )
         return
 
-    # Pfade/Infos aus info.json
+    # Paths/info from info.json
     try:
         paths = info.get("paths") or {}
         watch = info.get("watch") or {}
@@ -213,11 +213,11 @@ def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
         src_stem = Path(src_name).stem if src_name else hash_dir.name
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: info.json unvollständig ({e}) – überspringe Post-Processing"
+            f"[WARN] {hash_dir.name}: info.json incomplete ({e}) – skipping post-processing"
         )
         return
 
-    # Nur *.hdf5-Datei in den Zielordner kopieren, und zwar als <SRC_STEM>.hdf5
+    # Only copy the *.hdf5 file into the target folder, named <SRC_STEM>.hdf5
     try:
         final_root.mkdir(parents=True, exist_ok=True)
 
@@ -229,8 +229,8 @@ def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
 
         if not hdf5_files:
             status_q.put(
-                f"[WARN] {hash_dir.name}: Keine .hdf5-Datei in {tmp_output_dir} gefunden – "
-                "überspringe Output-Kopie"
+                f"[WARN] {hash_dir.name}: No .hdf5 file found in {tmp_output_dir} – "
+                "skipping output copy"
             )
             return
 
@@ -246,11 +246,11 @@ def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
         shutil.copy2(best_file, target_file)
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: Output-Kopie (.hdf5) nach '{final_root}' fehlgeschlagen: {e}"
+            f"[WARN] {hash_dir.name}: Output copy (.hdf5) to '{final_root}' failed: {e}"
         )
         return
 
-    # ignore.txt befüllen (wenn in info.watch.ignore_files vorhanden, das nehmen; sonst <final_root>/ignore.txt)
+    # Fill ignore.txt (if info.watch.ignore_files contains candidates, use those; otherwise <final_root>/ignore.txt)
     try:
         ignore_candidates: list[Path] = []
         w = info.get("watch") or {}
@@ -267,38 +267,38 @@ def _postprocess_success(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
         _append_to_ignore_file(ignore_file, src_name)
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: ignore.txt-Update fehlgeschlagen: {e}"
+            f"[WARN] {hash_dir.name}: ignore.txt update failed: {e}"
         )
 
-    # tmp/<hash>/{input,output,work} leeren
+    # Clear tmp/<hash>/{input,output,work}
     try:
         _empty_dir(hash_dir / "input")
         _empty_dir(hash_dir / "output")
         _empty_dir(hash_dir / "work")
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: Leeren von input/output/work fehlgeschlagen: {e}"
+            f"[WARN] {hash_dir.name}: Clearing input/output/work failed: {e}"
         )
 
     status_q.put(
         f"[OUT] {hash_dir.name}: {best_file.name} → {target_file} ; "
-        f"ignore.txt aktualisiert ; tmp/input & tmp/output geleert"
+        f"ignore.txt updated ; tmp/input & tmp/output cleared"
     )
 
 
 def _postprocess_failure(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
     """
-    Wird bei rc!=0 aufgerufen.
+    Called when rc != 0.
 
-    - Wenn KEINE .hdf5 erzeugt wurde:
-        .nextflow.log im Hash-Ordner wird als <SRC_STEM>.error.log in
-        final_output_root kopiert, z. B. EXII12567std.error.log.
-    - Wenn doch eine .hdf5 existiert, wird kein Fehler-Log gespiegelt.
+    - If NO .hdf5 was produced:
+        .nextflow.log in the hash directory is copied as <SRC_STEM>.error.log
+        into final_output_root, e.g. EXII12567std.error.log.
+    - If an .hdf5 exists, no error log is copied.
     """
     info = _read_json(hash_dir / "info.json")
     if not isinstance(info, dict):
         status_q.put(
-            f"[WARN] {hash_dir.name}: info.json fehlt/korrupt – Fehler-Post-Processing übersprungen"
+            f"[WARN] {hash_dir.name}: info.json missing/corrupt – skipping failure post-processing"
         )
         return
 
@@ -313,11 +313,11 @@ def _postprocess_failure(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
         src_stem = Path(src_name).stem if src_name else hash_dir.name
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: info.json unvollständig ({e}) – Fehler-Post-Processing übersprungen"
+            f"[WARN] {hash_dir.name}: info.json incomplete ({e}) – skipping failure post-processing"
         )
         return
 
-    # Wenn doch eine .hdf5 existiert, kein Fehlerlog erzeugen
+    # If an .hdf5 exists, do not create an error log
     has_hdf5 = False
     try:
         if tmp_output_dir.is_dir():
@@ -329,15 +329,15 @@ def _postprocess_failure(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
 
     if has_hdf5:
         status_q.put(
-            f"[WARN] {hash_dir.name}: rc!=0, aber .hdf5 gefunden – kein .error.log erzeugt"
+            f"[WARN] {hash_dir.name}: rc!=0, but .hdf5 found – no .error.log created"
         )
         return
 
-    # .nextflow.log im Hash-Ordner verwenden
+    # Use .nextflow.log in the hash directory
     log_src = hash_dir / ".nextflow.log"
     if not log_src.is_file():
         status_q.put(
-            f"[WARN] {hash_dir.name}: .nextflow.log nicht gefunden – kein .error.log erzeugt"
+            f"[WARN] {hash_dir.name}: .nextflow.log not found – no .error.log created"
         )
         return
 
@@ -345,21 +345,21 @@ def _postprocess_failure(hash_dir: Path, status_q: "queue.Queue[str]") -> None:
         final_root.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: Fehler-Output-Ziel '{final_root}' nicht nutzbar: {e}"
+            f"[WARN] {hash_dir.name}: Error-output target '{final_root}' not usable: {e}"
         )
         return
 
     target_file = final_root / f"{src_stem}.error.log"
     try:
         shutil.copy2(log_src, target_file)
-        status_q.put(f"[OUT] {hash_dir.name}: Fehler-Log → {target_file}")
+        status_q.put(f"[OUT] {hash_dir.name}: error log → {target_file}")
     except Exception as e:
         status_q.put(
-            f"[WARN] {hash_dir.name}: Kopieren der Fehler-Logdatei fehlgeschlagen: {e}"
+            f"[WARN] {hash_dir.name}: Copying error log file failed: {e}"
         )
 
 
-# ----------------------------- Runner-Loop -----------------------------
+# ----------------------------- Runner loop -----------------------------
 
 
 def _runner_loop(
@@ -373,13 +373,13 @@ def _runner_loop(
     running: Dict[Path, _RunningJob] = {}
 
     while not stop_evt.is_set():
-        # Beendete Prozesse einsammeln
+        # Collect finished processes
         for hdir, job in list(running.items()):
             rc = job.proc.poll()
             if rc is None:
                 continue
 
-            # Post-Processing für Erfolg/Fehler
+            # Post-processing for success/failure
             try:
                 if rc == 0:
                     _postprocess_success(hdir, status_q)
@@ -387,10 +387,10 @@ def _runner_loop(
                     _postprocess_failure(hdir, status_q)
             except Exception as e:
                 status_q.put(
-                    f"[WARN] {hdir.name}: Post-Processing Fehler: {e}"
+                    f"[WARN] {hdir.name}: post-processing error: {e}"
                 )
 
-            # Abschluss markieren
+            # Mark completion
             try:
                 _append_line(job.working_file, f"finished: {_iso_now()}")
                 _append_line(job.working_file, f"returncode: {rc}")
@@ -404,16 +404,16 @@ def _runner_loop(
                 status_q.put(status_msg)
             except Exception as e:
                 status_q.put(
-                    f"[WARN] Abschluss für {hdir.name} fehlgeschlagen: {e}"
+                    f"[WARN] Finalization for {hdir.name} failed: {e}"
                 )
             finally:
                 running.pop(hdir, None)
 
-        # Neue Jobs starten
+        # Start new jobs
         capacity = max(0, int(max_parallel) - len(running))
         if capacity > 0:
             ready_list = list(_discover_ready_dirs(tmp_dir))
-            # Älteste .ready zuerst
+            # Oldest .ready first
             ready_list.sort(
                 key=lambda t: (t[1].stat().st_mtime, t[0].name)
             )
@@ -430,7 +430,7 @@ def _runner_loop(
                     _append_line(working, f"started: {_iso_now()}")
                 except Exception as e:
                     status_q.put(
-                        f"[WARN] Konnte .ready für {hdir.name} nicht übernehmen: {e}"
+                        f"[WARN] Could not take over .ready for {hdir.name}: {e}"
                     )
                     continue
 
@@ -441,14 +441,14 @@ def _runner_loop(
                 if not mcq_json or not mcq_json.is_file() or not main_nf:
                     _append_line(
                         working,
-                        "error: mcquac.json oder main.nf (aus app.json) nicht gefunden",
+                        "error: mcquac.json or main.nf (from app.json) not found",
                     )
                     try:
                         _rename_atomic(working, hdir / ".error")
                     except Exception:
                         pass
                     status_q.put(
-                        f"[ERR] {hdir.name}: mcquac.json oder main.nf (app.json) fehlt"
+                        f"[ERR] {hdir.name}: mcquac.json or main.nf (app.json) missing"
                     )
                     continue
 
@@ -493,14 +493,14 @@ def _runner_loop(
                 except FileNotFoundError:
                     _append_line(
                         working,
-                        f"error: nextflow nicht gefunden (bin={nf_bin})",
+                        f"error: nextflow not found (bin={nf_bin})",
                     )
                     try:
                         _rename_atomic(working, hdir / ".error")
                     except Exception:
                         pass
                     status_q.put(
-                        f"[ERR] {hdir.name}: nextflow nicht gefunden (bin={nf_bin})"
+                        f"[ERR] {hdir.name}: nextflow not found (bin={nf_bin})"
                     )
                 except Exception as e:
                     _append_line(working, f"error: {e!r}")
@@ -509,10 +509,10 @@ def _runner_loop(
                     except Exception:
                         pass
                     status_q.put(
-                        f"[ERR] {hdir.name}: Start fehlgeschlagen: {e!r}"
+                        f"[ERR] {hdir.name}: start failed: {e!r}"
                     )
 
-        # kleinem Sleep über stop_evt.wait, damit der Loop nicht busy ist
+        # Small sleep via stop_evt.wait so the loop is not busy
         stop_evt.wait(poll_interval)
 
 
@@ -550,13 +550,13 @@ if __name__ == "__main__":
     try:
         cfg = load_config()
     except Exception as e:
-        raise SystemExit(f"Config konnte nicht geladen werden: {e}")
+        raise SystemExit(f"Config could not be loaded: {e}")
 
     tmp_dir = TMP_DEFAULT
     tmp_dir.mkdir(parents=True, exist_ok=True)
     ctl = start_runner_thread(tmp_dir, cfg, max_parallel=1, poll_interval=1.0)
 
-    print("MCQuaC Runner gestartet. Strg+C zum Beenden.")
+    print("MCQuaC runner started. Press Ctrl+C to exit.")
     try:
         while True:
             try:
@@ -569,4 +569,4 @@ if __name__ == "__main__":
     finally:
         ctl["stop"].set()
         ctl["thread"].join(timeout=5)
-        print("Beendet.")
+        print("Stopped.")
